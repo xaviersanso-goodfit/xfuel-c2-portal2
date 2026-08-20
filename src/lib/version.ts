@@ -7,18 +7,16 @@
  *
  * Bump this whenever a build is handed over.
  */
-export const BUILD = "2026-07-27h";
+export const BUILD = "2026-08-20-v2";
 
 /** What landed in this build. Shown on hover of the version chip. */
 export const BUILD_NOTES = [
-  "Unit economics by plan year (Y1-Y10)",
-  "OPEX and compensation inflation",
-  "IRR/NPV panel with definitions",
-  "36-month cover chart, PNG export",
-  "Short-input-series fix",
-  "Legacy workbook import fix",
-  "Inflation shown on the OPEX tab",
-  "XFuel total: group cash flow and bridge",
-  "Waterfall: logo and larger type",
-  "Excel: live debt schedule, NPV and XIRR",
+  "v2: every line renamable, with a description",
+  "Add and remove revenue, COGS and OPEX lines",
+  "Five calculation bases per line",
+  "Revenue and COGS inflation",
+  "Sustainable premium, split out in margin",
+  "Horizon extended to 20 years",
+  "Insurance is a fixed amount, not a % of CAPEX",
+  "Changelog: who changed what, when",
 ].join(" · ");

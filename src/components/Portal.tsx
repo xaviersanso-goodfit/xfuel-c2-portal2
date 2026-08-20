@@ -20,10 +20,12 @@ import FinancingTab from "./tabs/FinancingTab";
 import StatementTab from "./tabs/StatementTab";
 import ScenariosTab from "./tabs/ScenariosTab";
 import GroupTab from "./tabs/GroupTab";
+import ChangelogTab from "./tabs/ChangelogTab";
+import { recordChanges } from "@/lib/supabase/changelog";
 
 export type TabId =
   | "parameters" | "capex" | "unitecon" | "opex" | "financing"
-  | "pnl" | "cashflow" | "group" | "scenarios";
+  | "pnl" | "cashflow" | "group" | "changelog" | "scenarios";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "parameters", label: "Global parameters" },
@@ -34,6 +36,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "pnl", label: "P&L" },
   { id: "cashflow", label: "Cash flow" },
   { id: "group", label: "XFuel total" },
+  { id: "changelog", label: "Changelog" },
   { id: "scenarios", label: "Scenarios" },
 ];
 
@@ -47,6 +50,9 @@ export default function Portal() {
   const [scenarios, setScenarios] = useState<ScenarioRow[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [inputs, setInputs] = useState<ScenarioInputs>(defaultScenario());
+  // The scenario as last loaded or saved. The changelog diffs against this, so
+  // it must only move when the server copy moves, never on every keystroke.
+  const [baseline, setBaseline] = useState<ScenarioInputs>(defaultScenario());
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -115,7 +121,11 @@ export default function Portal() {
         setActiveId((prev) => prev ?? first.id);
         // Scenarios saved under an older, shorter horizon carry short series.
         // Normalise on the way in so the grids and the engine agree.
-        if (!activeId) setInputs(normaliseScenario(first.inputs as ScenarioInputs));
+        if (!activeId) {
+          const loaded = normaliseScenario(first.inputs as ScenarioInputs);
+          setInputs(loaded);
+          setBaseline(loaded);
+        }
       }
     } catch (e) {
       setToast(`Could not load scenarios: ${(e as Error).message}`);
@@ -152,7 +162,9 @@ export default function Portal() {
     if (!row) return;
     if (dirty && !window.confirm("You have unsaved changes. Switch scenario and lose them?")) return;
     setActiveId(id);
-    setInputs(normaliseScenario(row.inputs as ScenarioInputs));
+    const loaded = normaliseScenario(row.inputs as ScenarioInputs);
+    setInputs(loaded);
+    setBaseline(loaded);
     setDirty(false);
   };
 
@@ -162,10 +174,24 @@ export default function Portal() {
     try {
       const row = await saveScenario({ id: activeId ?? undefined, name: inputs.name, inputs });
       if (row) {
+        // Log after the save succeeds, so a failed save leaves no phantom
+        // history. A failed log does not fail the save.
+        const logged = await recordChanges({
+          before: baseline,
+          after: inputs,
+          scenarioId: row.id,
+          scenarioName: inputs.name,
+          userEmail: email ?? "unknown",
+        });
         setActiveId(row.id);
+        setBaseline(inputs);
         setDirty(false);
         await refresh();
-        setToast("Scenario saved");
+        setToast(
+          logged.length > 0
+            ? `Scenario saved. ${logged.length} ${logged.length === 1 ? "change" : "changes"} logged.`
+            : "Scenario saved"
+        );
       }
     } catch (e) {
       setToast(`Save failed: ${(e as Error).message}`);
@@ -305,6 +331,7 @@ export default function Portal() {
         {tab === "pnl" && <StatementTab kind="pnl" inputs={inputs} model={model} />}
         {tab === "cashflow" && <StatementTab kind="cashflow" inputs={inputs} model={model} />}
         {tab === "group" && <GroupTab inputs={inputs} model={model} onChange={update} editable={isEditor} />}
+        {tab === "changelog" && <ChangelogTab scenarioId={activeId} backend={backend} />}
         {tab === "scenarios" && (
           <ScenariosTab
             inputs={inputs}

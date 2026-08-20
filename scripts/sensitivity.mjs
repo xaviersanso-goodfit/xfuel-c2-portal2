@@ -6,6 +6,7 @@
 import { runModel } from "../src/lib/model/engine.ts";
 import { defaultScenario } from "../src/lib/model/defaults.ts";
 import { PERIOD_COUNT, MONTHLY_PERIODS } from "../src/lib/model/periods.ts";
+import { BASIS_USES } from "../src/lib/model/components.ts";
 const LAST = PERIOD_COUNT - 1;
 const STEADY = MONTHLY_PERIODS;
 
@@ -117,9 +118,16 @@ for (const line of BASE_INPUTS.capex) {
     wired(
       `capex[${line.id}].depRateMonthly moves depreciation only`,
       (s) => (s.capex[i].depRateMonthly = s.capex[i].depRateMonthly * 2),
-      ["depreciation", "ebit"],
+      [],
       ["ebitda", "revenue", "capexSpend"]
     );
+    {
+      // Over 20 years the asset fully depreciates on either rate, so the total
+      // is unchanged by construction. A faster rate must front-load the charge.
+      const fast = perturb((s) => (s.capex[i].depRateMonthly = s.capex[i].depRateMonthly * 2));
+      const early = (m) => sum(m.results.slice(0, MONTHLY_PERIODS).map((r) => r.depreciation));
+      check(`capex[${line.id}] faster depreciation front-loads the charge`, early(fast) > early(BASE));
+    }
   } else {
     const m = perturb((s) => (s.capex[i].depRateMonthly = 0.01));
     check(`capex[${line.id}] is land: raising its rate would depreciate it`, changed(total(m, "depreciation"), total(BASE, "depreciation")));
@@ -170,26 +178,78 @@ for (const line of BASE_INPUTS.capex) {
 }
 
 console.log("\n-- unit economics (every driver) --");
-const UE_CASES = [
-  ["pricePerTon", (u) => scaleAll(u, "pricePerTon", 1.2), ["revenue", "grossMargin"], ["cogs", "opexTotal"]],
-  ["annualHours", (u) => scaleAll(u, "annualHours", 1.1), ["revenue", "cogs"], []],
-  ["mgoYieldKgPerHour", (u) => scaleAll(u, "mgoYieldKgPerHour", 1.1), ["revenue", "tons"], ["cogsMts"]],
-  ["mtsInputKgPerHour", (u) => scaleAll(u, "mtsInputKgPerHour", 1.1), ["cogsMts", "cogs"], ["revenue"]],
-  ["reactantInputKgPerHour", (u) => scaleAll(u, "reactantInputKgPerHour", 1.1), ["cogsReactants", "cogs"], ["revenue"]],
-  ["residueYieldKgPerHour", (u) => scaleAll(u, "residueYieldKgPerHour", 1.1), ["cogsResidue", "cogs"], ["revenue"]],
-  ["waterYieldKgPerHour", (u) => { setAll(u, "waterYieldKgPerHour", 100); setAll(u, "waterCostPerTon", 5); }, ["cogsWater", "cogs"], ["revenue"]],
-  ["mtsCostPerTon", (u) => scaleAll(u, "mtsCostPerTon", 1.2), ["cogsMts", "cogs"], ["revenue"]],
-  ["reactantCostPerTon", (u) => scaleAll(u, "reactantCostPerTon", 1.2), ["cogsReactants", "cogs"], ["revenue"]],
-  ["residueCostPerTon", (u) => scaleAll(u, "residueCostPerTon", 1.2), ["cogsResidue", "cogs"], ["revenue"]],
-  ["electricityPricePerKwh", (u) => scaleAll(u, "electricityPricePerKwh", 1.3), ["cogsEnergy", "cogs"], ["revenue"]],
-  ["electricityKwhPerHour", (u) => scaleAll(u, "electricityKwhPerHour", 1.3), ["cogsEnergy", "cogs"], ["revenue"]],
-  ["heatPricePerKwh", (u) => scaleAll(u, "heatPricePerKwh", 1.3), ["cogsEnergy", "cogs"], ["revenue"]],
-  ["heatKwhPerHour", (u) => scaleAll(u, "heatKwhPerHour", 1.3), ["cogsEnergy", "cogs"], ["revenue"]],
-  ["maintenancePctOfCapex", (u) => scaleAll(u, "maintenancePctOfCapex", 2), ["cogsMaintenance", "cogs"], ["revenue"]],
-];
-for (const [name, mutate, moves, steady] of UE_CASES) {
-  wired(`unitEconomics.${name}`, (s) => mutate(s.unitEconomics), moves, steady);
+
+/** Total of one component's contribution across the plan. */
+const compTotal = (m, bucket, id) => sum(m.results.map((r) => r[bucket][id] ?? 0));
+
+// Every component, every driver it uses. Adding a line to the seeded scenario
+// automatically adds its own cases here, so a new basis cannot go untested.
+for (const c of BASE_INPUTS.cogs) {
+  const uses = BASIS_USES[c.basis];
+  const fields = [uses.quantity ? "quantity" : null, uses.unitCost ? "unitCost" : null].filter(Boolean);
+  for (const field of fields) {
+    // A line seeded at zero stays zero however its drivers are scaled, so the
+    // comparison is against a control where the line is switched on.
+    const wake = (t) => {
+      for (const f of fields) t[f] = t[f].map((v) => (v === 0 ? 1 : v));
+    };
+    const ctrl = perturb((s2) => wake(s2.cogs.find((x) => x.id === c.id)));
+    const m = perturb((s2) => {
+      const t = s2.cogs.find((x) => x.id === c.id);
+      wake(t);
+      t[field] = t[field].map((v) => v * 1.2);
+    });
+    check(
+      `cogs[${c.id}].${field} moves its own line and total COGS`,
+      changed(compTotal(m, "cogsByComponent", c.id), compTotal(ctrl, "cogsByComponent", c.id)) &&
+        changed(total(m, "cogs"), total(ctrl, "cogs")) &&
+        same(total(m, "revenue"), total(ctrl, "revenue"), 0.01)
+    );
+    check(`raising cogs[${c.id}].${field} reduces EBITDA`, total(m, "ebitda") < total(ctrl, "ebitda"));
+    // No other line may move: a shared driver would be a wiring bug.
+    const bled = BASE_INPUTS.cogs
+      .filter((o) => o.id !== c.id)
+      .filter((o) => changed(compTotal(m, "cogsByComponent", o.id), compTotal(ctrl, "cogsByComponent", o.id)));
+    check(`cogs[${c.id}].${field} does not bleed into other lines`, bled.length === 0, bled.map((o) => o.id).join(", "));
+  }
 }
+
+for (const c of BASE_INPUTS.revenue) {
+  wired(
+    `revenue[${c.id}].unitCost moves revenue and margin, not cost`,
+    (s2) => {
+      const t = s2.revenue.find((x) => x.id === c.id);
+      t.unitCost = t.unitCost.map((v) => v * 1.2);
+    },
+    ["revenue", "revenueBase", "grossMargin"],
+    ["cogs", "opexTotal"]
+  );
+  wired(
+    `revenue[${c.id}].yieldKgPerHour moves volume and revenue`,
+    (s2) => {
+      const t = s2.revenue.find((x) => x.id === c.id);
+      t.yieldKgPerHour = t.yieldKgPerHour.map((v) => v * 1.1);
+    },
+    ["revenue", "tons"],
+    []
+  );
+}
+
+for (const c of BASE_INPUTS.opex) {
+  const uses = BASIS_USES[c.basis];
+  const field = uses.unitCost ? "unitCost" : "quantity";
+  wired(
+    `opex[${c.id}].${field} moves other OPEX only`,
+    (s2) => {
+      const t = s2.opex.find((x) => x.id === c.id);
+      t[field] = t[field].map((v) => (v === 0 ? 1000 : v * 1.5));
+    },
+    ["opexOther", "opexTotal"],
+    ["revenue", "cogs", "opexPersonnel"]
+  );
+}
+
+wired("unitEconomics.annualHours moves revenue and COGS", (s2) => scaleAll(s2.unitEconomics, "annualHours", 1.1), ["revenue", "cogs"], []);
 wired(
   "unitEconomics.utilisation moves volume, revenue and COGS",
   (s) => (s.unitEconomics.utilisation = s.unitEconomics.utilisation.map((v) => (v > 0 ? v * 0.5 : v))),
@@ -197,27 +257,56 @@ wired(
   ["depreciation"]
 );
 {
-  // Directional sanity: every cost driver up must reduce EBITDA.
-  for (const [name, mutate] of UE_CASES.filter(([n]) => n.includes("Cost") || n.includes("Price") || n.includes("Kwh"))) {
-    if (name === "pricePerTon") continue;
-    const m = perturb((s) => mutate(s.unitEconomics));
-    check(`raising ${name} reduces EBITDA`, total(m, "ebitda") < total(BASE, "ebitda"));
-  }
-  const up = perturb((s) => scaleAll(s.unitEconomics, "pricePerTon", 1.2));
+  const up = perturb((s2) => {
+    s2.revenue = s2.revenue.map((c) => ({ ...c, unitCost: c.unitCost.map((v) => v * 1.2) }));
+  });
   check("raising price increases EBITDA", total(up, "ebitda") > total(BASE, "ebitda"));
 }
 
 {
   // A yearly driver must be wired year by year, not just in aggregate.
-  const y6 = perturb((s) => (s.unitEconomics.pricePerTon = s.unitEconomics.pricePerTon.map((v, y) => (y === 5 ? v * 2 : v))));
+  const y6 = perturb((s2) => {
+    s2.revenue = s2.revenue.map((c) => ({ ...c, unitCost: c.unitCost.map((v, y) => (y === 5 ? v * 2 : v)) }));
+  });
   const movedYears = new Set(y6.results.map((r, i) => (changed(r.revenue, BASE.results[i].revenue) ? y6.periods[i].year : null)).filter(Boolean));
   check("a single-year price change moves only that year", movedYears.size === 1 && movedYears.has(6), `${[...movedYears]}`);
 }
+
+console.log("\n-- premium and inflation --");
+wired(
+  "sustainablePremium moves revenue and margin, not cost",
+  (s2) => (s2.parameters.sustainablePremium = 1.7),
+  ["revenue", "revenuePremium", "grossMargin", "grossMarginPremium", "ebitda"],
+  ["cogs", "revenueBase", "grossMarginBase", "opexTotal", "tons"]
+);
+wired(
+  "revenueInflation moves revenue only",
+  (s2) => (s2.parameters.revenueInflation = 0.06),
+  ["revenue", "revenueBase", "grossMargin"],
+  ["cogs", "opexTotal", "tons"]
+);
+wired(
+  "cogsInflation moves COGS only",
+  (s2) => (s2.parameters.cogsInflation = 0.06),
+  ["cogs", "grossMargin"],
+  ["revenue", "opexTotal", "tons"]
+);
+{
+  const m = perturb((s2) => (s2.parameters.sustainablePremium = 1.7));
+  check("a higher premium raises project IRR", (m.valuation.projectIrr ?? -9) > (BASE.valuation.projectIrr ?? -9));
+}
+
 wired("opexInflation moves other OPEX only", (s) => (s.parameters.opexInflation = 0.15), ["opexOther", "opexTotal", "ebitda"], ["revenue", "cogs", "opexPersonnel"]);
 wired("compensationInflation moves personnel only", (s) => (s.parameters.compensationInflation = 0.15), ["opexPersonnel", "opexTotal", "ebitda"], ["revenue", "cogs", "opexOther"]);
 {
   const m = perturb((s) => (s.parameters.opexInflation = 0.15));
-  check("higher OPEX inflation lowers project IRR", (m.valuation.projectIrr ?? 9) < (BASE.valuation.projectIrr ?? 9));
+  // An IRR that stops solving because the plan no longer pays back is itself a
+  // fall, so a null reads as worse than any number.
+  const worse =
+    m.valuation.projectIrr === null || m.valuation.projectIrr === undefined
+      ? true
+      : m.valuation.projectIrr < BASE.valuation.projectIrr;
+  check("higher OPEX inflation lowers project IRR", worse, `${m.valuation.projectIrr} vs ${BASE.valuation.projectIrr}`);
 }
 
 console.log("\n-- opex and personnel --");
@@ -248,28 +337,17 @@ for (let i = 0; i < BASE_INPUTS.personnel.length; i++) {
   const less = perturb((s) => s.personnel.splice(0, 1));
   check("removing an archetype decreases personnel cost", total(less, "opexPersonnel") < total(BASE, "opexPersonnel"));
 }
-for (let i = 0; i < BASE_INPUTS.opex.length; i++) {
-  const cat = BASE_INPUTS.opex[i];
-  wired(
-    `opex[${cat.label}].amounts moves other OPEX`,
-    (s) => (s.opex[i].amounts = s.opex[i].amounts.map((v) => v + 25000)),
-    ["opexOther", "opexTotal"],
-    ["revenue", "cogs"]
-  );
-  if (cat.pctOfCapexPerAnnum) {
-    wired(
-      `opex[${cat.label}].pctOfCapexPerAnnum moves other OPEX`,
-      (s) => (s.opex[i].pctOfCapexPerAnnum = s.opex[i].pctOfCapexPerAnnum * 3),
-      ["opexOther", "opexTotal"],
-      ["revenue"]
-    );
-  }
-}
-
 console.log("\n-- financing instruments --");
 {
   const di = BASE_INPUTS.instruments.findIndex((x) => x.kind === "debt");
-  wired("debt.amount moves draw, interest and CFF", (s) => (s.instruments[di].amount *= 1.5), ["debtDraw", "interestExpense", "cff"], ["ebitda"]);
+  wired("debt.amount moves draw and interest", (s) => (s.instruments[di].amount *= 1.5), ["debtDraw", "interestExpense"], ["ebitda"]);
+  {
+    // Over the full life a facility drawn and repaid nets out, so the total CFF
+    // barely moves. What must move is the cash in the year it is drawn.
+    const m = perturb((s) => (s.instruments[di].amount *= 1.5));
+    const drawYear = sum(series(m, "cff").slice(0, 12));
+    check("debt.amount moves CFF in the drawdown year", changed(drawYear, sum(series(BASE, "cff").slice(0, 12))));
+  }
   wired("debt.rate moves interest only", (s) => (s.instruments[di].rate = 0.12), ["interestExpense", "pbt"], ["ebitda", "cff", "debtDraw"]);
   wired("debt.upfrontFeePct moves interest", (s) => (s.instruments[di].upfrontFeePct = 0.02), ["interestExpense"], ["ebitda"]);
   {
@@ -278,7 +356,11 @@ console.log("\n-- financing instruments --");
   }
   {
     const m = perturb((s) => (s.instruments[di].tenorMonths = 60));
-    check("debt.tenorMonths changes the repayment schedule", changed(total(m, "debtRepayment"), total(BASE, "debtRepayment")));
+    // Both tenors repay in full inside a 20-year plan, so the total is the same
+    // by construction. A shorter tenor must repay sooner and cost less interest.
+    const early = (x) => sum(series(x, "debtRepayment").slice(0, MONTHLY_PERIODS));
+    check("debt.tenorMonths changes the repayment schedule", early(m) > early(BASE));
+    check("a shorter tenor costs less interest", total(m, "interestExpense") < total(BASE, "interestExpense"));
   }
   for (const profile of ["annuity", "bullet"]) {
     const m = perturb((s) => (s.instruments[di].repayment = profile));
@@ -312,16 +394,21 @@ console.log("\n-- end-to-end chains --");
   // CAPEX must flow all the way to depreciation, maintenance, insurance and EBITDA.
   const m = perturb((s) => s.capex.forEach((l) => (l.total *= 2)));
   check("CAPEX -> depreciation", total(m, "depreciation") > total(BASE, "depreciation"));
-  check("CAPEX -> maintenance COGS", total(m, "cogsMaintenance") > total(BASE, "cogsMaintenance"));
-  check("CAPEX -> insurance OPEX", total(m, "opexOther") > total(BASE, "opexOther"));
-  check("CAPEX -> EBITDA (via maintenance and insurance)", total(m, "ebitda") < total(BASE, "ebitda"));
+  const maint = (x) => sum(x.results.map((r) => r.cogsByComponent.maintenance ?? 0));
+  check("CAPEX -> maintenance COGS", maint(m) > maint(BASE));
+  // Insurance is a fixed annual amount, not a percentage of CAPEX, so doubling
+  // the asset base must leave OPEX exactly where it was.
+  check("CAPEX does not move OPEX", same(total(m, "opexOther"), total(BASE, "opexOther"), 0.01));
+  check("CAPEX -> EBITDA (via maintenance)", total(m, "ebitda") < total(BASE, "ebitda"));
   check("CAPEX -> CFI", total(m, "cfi") < total(BASE, "cfi"));
   check("CAPEX -> final cash", m.results[LAST].closingCash < BASE.results[LAST].closingCash);
   check("CAPEX -> project IRR", changed(m.valuation.projectIrr ?? 0, BASE.valuation.projectIrr ?? 0, 1e-6));
 }
 {
   // Price must flow to revenue, EBITDA, tax, cash and both IRRs.
-  const m = perturb((s) => scaleAll(s.unitEconomics, "pricePerTon", 1.5));
+  const m = perturb((s) => {
+    s.revenue = s.revenue.map((c) => ({ ...c, unitCost: c.unitCost.map((v) => v * 1.5) }));
+  });
   check("price -> revenue", total(m, "revenue") > total(BASE, "revenue"));
   check("price -> EBITDA", total(m, "ebitda") > total(BASE, "ebitda"));
   check("price -> tax", total(m, "tax") > total(BASE, "tax"));
@@ -347,7 +434,14 @@ console.log("\n-- end-to-end chains --");
     s.capex.forEach((l) => (l.total = 0));
     s.instruments = [];
   });
-  check("degenerate inputs never produce NaN", wild.results.every((r) => Object.values(r).every((x) => Number.isFinite(x))));
+  // Component breakdowns are objects, so the check has to look inside them.
+  const allFinite = (r) =>
+    Object.values(r).every((x) =>
+      typeof x === "object" && x !== null
+        ? Object.values(x).every((y) => Number.isFinite(y))
+        : Number.isFinite(x)
+    );
+  check("degenerate inputs never produce NaN", wild.results.every(allFinite));
 }
 
 console.log(`\n=== ${failures === 0 ? "ALL WIRING CHECKS PASS" : failures + " CHECK(S) FAILED"} ===\n`);

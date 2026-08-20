@@ -1,4 +1,6 @@
 import ExcelJS from "exceljs";
+import { BASIS_FIELD_LABELS, BASIS_USES } from "../model/components";
+import type { ModelComponent } from "../model/components";
 import { PERIOD_COUNT, TOTAL_YEARS } from "../model/periods";
 import { defaultScenario } from "../model/defaults";
 import { extendYearly } from "../model/normalise";
@@ -109,6 +111,9 @@ export async function parseWorkbook(data: ArrayBuffer): Promise<{ inputs: Scenar
       openingCash: scalar(wsP, "Opening cash", base.parameters.openingCash),
       opexInflation: scalar(wsP, "OPEX inflation (p.a.)", base.parameters.opexInflation),
       compensationInflation: scalar(wsP, "Compensation inflation (p.a.)", base.parameters.compensationInflation),
+      revenueInflation: scalar(wsP, "Revenue inflation (p.a.)", base.parameters.revenueInflation),
+      cogsInflation: scalar(wsP, "COGS inflation (p.a.)", base.parameters.cogsInflation),
+      sustainablePremium: scalar(wsP, "Sustainable premium (multiplier)", base.parameters.sustainablePremium),
       otherWorkingCapital: series(findRow(sheet("Cashflow"), "Other working capital")),
     },
   };
@@ -123,28 +128,36 @@ export async function parseWorkbook(data: ArrayBuffer): Promise<{ inputs: Scenar
   });
 
   // ---------- Unit economics ----------
+  // Components are matched by label, because that is all the workbook carries.
+  // A line renamed in Excel therefore falls back to the value already in the
+  // scenario rather than importing as zero, and the import notes say so.
   const wsU = sheet("UnitEcon");
   const ue = base.unitEconomics;
   inputs.unitEconomics = {
     ...ue,
-    pricePerTon: yearly(wsU, "Price per ton MGO (EUR)", ue.pricePerTon),
     annualHours: yearly(wsU, "Annual operating hours at 100%", ue.annualHours),
-    mgoYieldKgPerHour: yearly(wsU, "MGO yield (kg/h)", ue.mgoYieldKgPerHour),
-    mtsInputKgPerHour: yearly(wsU, "MTS input (kg/h)", ue.mtsInputKgPerHour),
-    reactantInputKgPerHour: yearly(wsU, "Reactant input (kg/h)", ue.reactantInputKgPerHour),
-    residueYieldKgPerHour: yearly(wsU, "Residue yield (kg/h)", ue.residueYieldKgPerHour),
-    waterYieldKgPerHour: yearly(wsU, "Water yield (kg/h)", ue.waterYieldKgPerHour),
-    mtsCostPerTon: yearly(wsU, "MTS cost per ton", ue.mtsCostPerTon),
-    reactantCostPerTon: yearly(wsU, "Reactant cost per ton", ue.reactantCostPerTon),
-    residueCostPerTon: yearly(wsU, "Residue cost per ton", ue.residueCostPerTon),
-    waterCostPerTon: yearly(wsU, "Water cost per ton", ue.waterCostPerTon),
-    electricityPricePerKwh: yearly(wsU, "Electricity price per kWh", ue.electricityPricePerKwh),
-    electricityKwhPerHour: yearly(wsU, "Electricity consumption (kWh/h)", ue.electricityKwhPerHour),
-    heatPricePerKwh: yearly(wsU, "Heat price per kWh", ue.heatPricePerKwh),
-    heatKwhPerHour: yearly(wsU, "Heat consumption (kWh/h)", ue.heatKwhPerHour),
-    maintenancePctOfCapex: yearly(wsU, "Maintenance % p.a. of deployed CAPEX", ue.maintenancePctOfCapex),
     utilisation: series(findRow(wsU, "Capacity utilisation %")),
   };
+
+  const readComponents = <T extends ModelComponent>(ws: ExcelJS.Worksheet | undefined, list: T[]): T[] =>
+    list.map((c) => {
+      const uses = BASIS_USES[c.basis] ?? { quantity: true, unitCost: true };
+      const labels = BASIS_FIELD_LABELS[c.basis] ?? { quantity: "Quantity", unitCost: "Unit cost" };
+      const next: T = { ...c };
+      if (c.yieldKgPerHour) {
+        next.yieldKgPerHour = yearly(ws, `${c.name} — yield (kg/h)`, c.yieldKgPerHour);
+      }
+      if (uses.quantity) next.quantity = yearly(ws, `${c.name} — ${labels.quantity}`, c.quantity);
+      if (uses.unitCost) next.unitCost = yearly(ws, `${c.name} — ${labels.unitCost}`, c.unitCost);
+      if (!findRow(ws, `${c.name} — ${labels.unitCost}`) && !findRow(ws, `${c.name} — ${labels.quantity}`)) {
+        notes.push(`No rows found for "${c.name}" — kept the values already in the scenario.`);
+      }
+      return next;
+    });
+
+  inputs.revenue = readComponents(wsU, base.revenue);
+  inputs.cogs = readComponents(wsU, base.cogs);
+  inputs.opex = readComponents(wsU, base.opex);
 
   // ---------- OPEX ----------
   const wsO = sheet("OPEX");
@@ -152,13 +165,6 @@ export async function parseWorkbook(data: ArrayBuffer): Promise<{ inputs: Scenar
     ...a,
     annualCost: scalar(wsO, `${a.label} — annual cost per FTE`, a.annualCost),
     ftes: series(findRow(wsO, `${a.label} — FTEs`)),
-  }));
-  inputs.opex = base.opex.map((c) => ({
-    ...c,
-    amounts: series(findRow(wsO, `${c.label} — amount`)),
-    pctOfCapexPerAnnum: c.pctOfCapexPerAnnum
-      ? scalar(wsO, `${c.label} — % p.a. of deployed CAPEX`, c.pctOfCapexPerAnnum)
-      : undefined,
   }));
 
   // ---------- Financing ----------

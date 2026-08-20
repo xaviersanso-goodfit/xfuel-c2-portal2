@@ -1,10 +1,12 @@
 "use client";
 
-import { InputRow, PeriodHead, SectionRow, ValueRow, YearHead, YearRow } from "../Grid";
-import { TOTAL_YEARS } from "@/lib/model/periods";
-import type { YearlyUeKey } from "@/lib/model/types";
+import ComponentEditor from "../ComponentEditor";
+import { InputRow, PeriodHead, ValueRow, YearHead, YearRow } from "../Grid";
 import { fmt, fmt1 } from "@/lib/format";
-import type { ModelOutputs, ScenarioInputs, UnitEconomics } from "@/lib/model/types";
+import { TOTAL_YEARS } from "@/lib/model/periods";
+import { COGS_BASES, REVENUE_BASES } from "@/lib/model/components";
+import type { ModelComponent, RevenueComponent } from "@/lib/model/components";
+import type { ModelOutputs, ScenarioInputs } from "@/lib/model/types";
 
 export default function UnitEconTab({
   inputs, model, onChange, editable,
@@ -14,102 +16,89 @@ export default function UnitEconTab({
   onChange: (next: ScenarioInputs) => void;
   editable: boolean;
 }) {
-  // Defence in depth: never emit a change when the session is read only,
-  // even if an input's disabled attribute is bypassed.
+  // Defence in depth: never emit a change when the session is read only.
   const emit = editable ? onChange : () => {};
-  const ue = inputs.unitEconomics;
   const periods = model.periods;
-  const set = (patch: Partial<UnitEconomics>) =>
-    emit({ ...inputs, unitEconomics: { ...ue, ...patch } });
-
   const R = model.results;
-  const YEARS = TOTAL_YEARS;
-  const setYear = (key: YearlyUeKey) => (next: number[]) => set({ [key]: next } as Partial<UnitEconomics>);
-
-  // Steady-state margin per ton, taken from the last annual period.
   const last = R[R.length - 1];
-  const perTon = last.tons > 0 ? (last.revenue - last.cogs) / last.tons : 0;
+  const p = inputs.parameters;
 
   return (
     <>
       <div className="page-title">Unit economics</div>
       <div className="page-sub">
-        Plant throughput, price and cost drivers, each by plan year. Revenue and COGS are driven by hourly throughput
-        times operating hours times capacity utilisation, matching the FAIIP business model. A driver left flat across
-        the ten years behaves exactly as a single figure did.
+        Revenue and cost of goods as editable lines. Rename anything, describe it, change how it is calculated, or add
+        and remove lines. Every driver is set by plan year, so a price curve or a yield improvement needs no code change.
       </div>
 
       <div className="kpis">
         <div className="kpi">
           <div className="k-label">Nameplate capacity</div>
           <div className="k-val">{fmt(last.nameplateTonsPerYear)}</div>
-          <div className="k-meta">tons MGO per year at 100%, final year</div>
+          <div className="k-meta">tons per year at 100%, final year</div>
         </div>
         <div className="kpi">
-          <div className="k-label">Price per ton</div>
+          <div className="k-label">Realised price per ton</div>
           <div className="k-val">{fmt(last.tons > 0 ? last.revenue / last.tons : 0)}</div>
-          <div className="k-meta">EUR per ton MGO, final year</div>
+          <div className="k-meta">including the {Number(p.sustainablePremium ?? 1).toFixed(2)}x premium</div>
         </div>
         <div className="kpi">
           <div className="k-label">Gross margin per ton</div>
-          <div className="k-val">{fmt(perTon)}</div>
+          <div className="k-val">{fmt(last.tons > 0 ? last.grossMargin / last.tons : 0)}</div>
           <div className="k-meta">at steady state</div>
         </div>
         <div className="kpi">
-          <div className="k-label">Steady-state revenue</div>
-          <div className="k-val">{fmt(last.revenue)}</div>
-          <div className="k-meta">final plan year</div>
+          <div className="k-label">Premium contribution</div>
+          <div className="k-val">{fmt(last.revenuePremium)}</div>
+          <div className="k-meta">
+            {last.revenue > 0
+              ? `${((last.revenuePremium / last.revenue) * 100).toFixed(0)}% of revenue`
+              : "no premium set"}
+          </div>
         </div>
       </div>
 
       <div className="card">
-        <h3>Drivers by plan year</h3>
+        <h3>Plant</h3>
         <div className="tbl-wrap">
           <table className="fin">
-            <YearHead years={YEARS} first="Driver" />
+            <YearHead years={TOTAL_YEARS} first="Driver" />
             <tbody>
-              <SectionRow label="Throughput" span={YEARS} />
-              <YearRow label="Price per ton MGO" suffix="(EUR)" values={ue.pricePerTon} years={YEARS}
-                editable={editable} onChange={setYear("pricePerTon")} />
-              <YearRow label="Annual operating hours at 100%" values={ue.annualHours} years={YEARS}
-                editable={editable} onChange={setYear("annualHours")} />
-              <YearRow label="MGO yield" suffix="(kg/h)" values={ue.mgoYieldKgPerHour} years={YEARS}
-                editable={editable} onChange={setYear("mgoYieldKgPerHour")} />
-              <YearRow label="MTS input" suffix="(kg/h)" values={ue.mtsInputKgPerHour} years={YEARS}
-                editable={editable} onChange={setYear("mtsInputKgPerHour")} />
-              <YearRow label="Reactant input" suffix="(kg/h)" values={ue.reactantInputKgPerHour} years={YEARS}
-                editable={editable} onChange={setYear("reactantInputKgPerHour")} />
-              <YearRow label="Residue yield" suffix="(kg/h)" values={ue.residueYieldKgPerHour} years={YEARS}
-                editable={editable} onChange={setYear("residueYieldKgPerHour")} />
-              <YearRow label="Water yield" suffix="(kg/h)" values={ue.waterYieldKgPerHour} years={YEARS}
-                editable={editable} onChange={setYear("waterYieldKgPerHour")} />
-
-              <SectionRow label="Input costs (EUR per ton)" span={YEARS} />
-              <YearRow label="MTS feedstock" values={ue.mtsCostPerTon} years={YEARS}
-                editable={editable} onChange={setYear("mtsCostPerTon")} />
-              <YearRow label="Reactants" values={ue.reactantCostPerTon} years={YEARS}
-                editable={editable} onChange={setYear("reactantCostPerTon")} />
-              <YearRow label="Residue disposal" values={ue.residueCostPerTon} years={YEARS}
-                editable={editable} onChange={setYear("residueCostPerTon")} />
-              <YearRow label="Water" values={ue.waterCostPerTon} years={YEARS}
-                editable={editable} onChange={setYear("waterCostPerTon")} />
-              <YearRow label="Maintenance" suffix="(% p.a. of deployed CAPEX)" values={ue.maintenancePctOfCapex}
-                years={YEARS} scale={100} step="0.01" editable={editable}
-                onChange={setYear("maintenancePctOfCapex")} />
-
-              <SectionRow label="Energy" span={YEARS} />
-              <YearRow label="Electricity price" suffix="(EUR/kWh)" values={ue.electricityPricePerKwh} years={YEARS}
-                step="0.0001" editable={editable} onChange={setYear("electricityPricePerKwh")} />
-              <YearRow label="Electricity consumption" suffix="(kWh/h)" values={ue.electricityKwhPerHour} years={YEARS}
-                editable={editable} onChange={setYear("electricityKwhPerHour")} />
-              <YearRow label="Heat price" suffix="(EUR/kWh)" values={ue.heatPricePerKwh} years={YEARS}
-                step="0.0001" editable={editable} onChange={setYear("heatPricePerKwh")} />
-              <YearRow label="Heat consumption" suffix="(kWh/h)" values={ue.heatKwhPerHour} years={YEARS}
-                editable={editable} onChange={setYear("heatKwhPerHour")} />
+              <YearRow
+                label="Annual operating hours at 100%"
+                values={inputs.unitEconomics.annualHours}
+                years={TOTAL_YEARS}
+                editable={editable}
+                onChange={(next) =>
+                  emit({ ...inputs, unitEconomics: { ...inputs.unitEconomics, annualHours: next } })
+                }
+              />
             </tbody>
           </table>
         </div>
       </div>
+
+      <ComponentEditor
+        kind="revenue"
+        title="Revenue lines"
+        intro="Each stream carries its own yield and price. The first line is the primary product and its yield sets nameplate capacity. Premium-eligible lines receive the sustainable premium multiplier set on the Global parameters tab."
+        components={inputs.revenue}
+        bases={REVENUE_BASES}
+        editable={editable}
+        showPremium
+        showYield
+        onChange={(next) => emit({ ...inputs, revenue: next as RevenueComponent[] })}
+      />
+
+      <ComponentEditor
+        kind="cogs"
+        title="COGS lines"
+        intro="Choose how each line is calculated: per operating hour, per kWh, per ton of product, as a percentage of deployed CAPEX, or as a fixed annual amount. Quantities are physical; the COGS inflation rate escalates the money."
+        components={inputs.cogs}
+        bases={COGS_BASES}
+        editable={editable}
+        onChange={(next) => emit({ ...inputs, cogs: next as ModelComponent[] })}
+      />
 
       <div className="card">
         <h3>Capacity utilisation and resulting volumes</h3>
@@ -118,19 +107,25 @@ export default function UnitEconTab({
             <PeriodHead periods={periods} first="Line" />
             <tbody>
               <InputRow
-                label="Plant capacity utilisation" suffix="(% of max)" values={ue.utilisation} periods={periods}
-                editable={editable} scale={100} step="0.1"
-                onChange={(next) => set({ utilisation: next })}
+                label="Plant capacity utilisation" suffix="(% of max)" values={inputs.unitEconomics.utilisation}
+                periods={periods} editable={editable} scale={100} step="0.1"
+                onChange={(next) =>
+                  emit({ ...inputs, unitEconomics: { ...inputs.unitEconomics, utilisation: next } })
+                }
               />
               <ValueRow label="Nameplate capacity (t/y)" values={R.map((r) => r.nameplateTonsPerYear)} periods={periods} format={fmt1} />
               <ValueRow label="Tons produced" values={R.map((r) => r.tons)} periods={periods} format={fmt1} />
-              <ValueRow label="Revenue" values={R.map((r) => r.revenue)} periods={periods} bold />
-              <ValueRow label="COGS — energy" values={R.map((r) => r.cogsEnergy)} periods={periods} />
-              <ValueRow label="COGS — MTS feedstock" values={R.map((r) => r.cogsMts)} periods={periods} />
-              <ValueRow label="COGS — reactants" values={R.map((r) => r.cogsReactants)} periods={periods} />
-              <ValueRow label="COGS — residue disposal" values={R.map((r) => r.cogsResidue)} periods={periods} />
-              <ValueRow label="COGS — water" values={R.map((r) => r.cogsWater)} periods={periods} />
-              <ValueRow label="COGS — maintenance" values={R.map((r) => r.cogsMaintenance)} periods={periods} />
+              <ValueRow label="Revenue — base price" values={R.map((r) => r.revenueBase)} periods={periods} />
+              <ValueRow label="Revenue — sustainable premium" values={R.map((r) => r.revenuePremium)} periods={periods} />
+              <ValueRow label="Total revenue" values={R.map((r) => r.revenue)} periods={periods} bold />
+              {inputs.cogs.map((c) => (
+                <ValueRow
+                  key={c.id}
+                  label={`COGS — ${c.name}`}
+                  values={R.map((r) => r.cogsByComponent[c.id] ?? 0)}
+                  periods={periods}
+                />
+              ))}
               <ValueRow label="Total COGS" values={R.map((r) => r.cogs)} periods={periods} bold />
               <ValueRow label="Gross margin" values={R.map((r) => r.grossMargin)} periods={periods} bold />
             </tbody>

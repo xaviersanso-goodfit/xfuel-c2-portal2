@@ -1,7 +1,9 @@
 import { PERIOD_COUNT, TOTAL_YEARS, buildPeriods } from "./periods";
 import { GROUP_MONTHS, defaultGroupInputs, groupZeroes } from "./group";
-import { YEARLY_UE_KEYS } from "./types";
+import { clampDescription } from "./components";
+import type { ModelComponent, RevenueComponent } from "./components";
 import type { Period, ScenarioInputs, UnitEconomics } from "./types";
+import { defaultScenario } from "./defaults";
 
 /**
  * How a per-period series should behave when the plan runs longer than the
@@ -76,15 +78,17 @@ export function normaliseScenario(inputs: ScenarioInputs): ScenarioInputs {
       // short array means "spending finished", not "carry on spending".
       phasing: (line.phasing ?? []).map((v) => (Number.isFinite(Number(v)) ? Number(v) : 0)),
     })),
-    unitEconomics: normaliseUnitEconomics(inputs.unitEconomics, periods),
+    unitEconomics: {
+      annualHours: extendYearly(inputs.unitEconomics?.annualHours),
+      utilisation: extendSeries(inputs.unitEconomics?.utilisation, periods, "rate"),
+    },
+    revenue: normaliseComponents(inputs.revenue, "revenue") as RevenueComponent[],
+    cogs: normaliseComponents(inputs.cogs, "cogs"),
     personnel: (inputs.personnel ?? []).map((p) => ({
       ...p,
       ftes: extendSeries(p.ftes, periods, "rate"),
     })),
-    opex: (inputs.opex ?? []).map((c) => ({
-      ...c,
-      amounts: extendSeries(c.amounts, periods, "amount"),
-    })),
+    opex: normaliseComponents(inputs.opex, "opex"),
     instruments: inputs.instruments ?? [],
     group: normaliseGroup(inputs.group),
   };
@@ -142,13 +146,34 @@ export function extendYearly(value: number | number[] | undefined, years = TOTAL
   return out;
 }
 
-/** Bring every yearly unit-economics driver, and the per-period utilisation, to full length. */
-export function normaliseUnitEconomics(ue: UnitEconomics | undefined, periods: Period[]): UnitEconomics {
-  const src = (ue ?? {}) as Record<string, unknown>;
-  const out: Record<string, unknown> = { ...src };
-  for (const key of YEARLY_UE_KEYS) {
-    out[key] = extendYearly(src[key] as number | number[] | undefined);
-  }
-  out.utilisation = extendSeries(ue?.utilisation, periods, "rate");
-  return out as unknown as UnitEconomics;
+/**
+ * Bring a component list to shape: full-length yearly series, a trimmed
+ * description, and a usable basis.
+ *
+ * A scenario saved by version 1 has no component arrays at all, so an empty or
+ * missing list falls back to the seeded defaults for that block rather than
+ * leaving the tab blank. That is a deliberate choice: a silently empty revenue
+ * list would compute zero revenue and look like a modelling result rather than
+ * a migration failure.
+ */
+export function normaliseComponents(
+  list: ModelComponent[] | undefined,
+  kind: "revenue" | "cogs" | "opex"
+): ModelComponent[] {
+  const source = list && list.length > 0 ? list : (defaultScenario()[kind] as ModelComponent[]);
+  return source.map((c, i) => {
+    const out: ModelComponent = {
+      id: c.id || `${kind}_${i}`,
+      name: c.name || `Line ${i + 1}`,
+      description: clampDescription(c.description),
+      basis: c.basis ?? (kind === "opex" ? "fixedAnnual" : "perTon"),
+      quantity: extendYearly(c.quantity),
+      unitCost: extendYearly(c.unitCost),
+    };
+    if (kind === "revenue") {
+      out.premiumEligible = c.premiumEligible !== false;
+      out.yieldKgPerHour = extendYearly(c.yieldKgPerHour);
+    }
+    return out;
+  });
 }

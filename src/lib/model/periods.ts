@@ -1,10 +1,10 @@
 import type { Period } from "./types";
 
 export const MONTHLY_YEARS = 3; // Y1, Y2 and Y3 are monthly
-export const TOTAL_YEARS = 10;
+export const TOTAL_YEARS = 20;
 export const MONTHLY_PERIODS = MONTHLY_YEARS * 12; // 36
-export const ANNUAL_PERIODS = TOTAL_YEARS - MONTHLY_YEARS; // 7
-export const PERIOD_COUNT = MONTHLY_PERIODS + ANNUAL_PERIODS; // 43
+export const ANNUAL_PERIODS = TOTAL_YEARS - MONTHLY_YEARS; // 17
+export const PERIOD_COUNT = MONTHLY_PERIODS + ANNUAL_PERIODS; // 53
 
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -19,7 +19,7 @@ export function parseStartMonth(startMonth: string): [number, number] {
 
 /**
  * Build the period grid: MONTHLY_PERIODS monthly periods (Y1..Y3) followed by the
- * remaining annual periods (Y4..Y10).
+ * remaining annual periods (Y4..Y20).
  * Plan years are offset from the start month, so "Y1" runs 12 months from the start month.
  */
 export function buildPeriods(startMonth: string): Period[] {
@@ -41,7 +41,7 @@ export function buildPeriods(startMonth: string): Period[] {
   }
 
   for (let k = 0; k < ANNUAL_PERIODS; k++) {
-    const planYear = MONTHLY_YEARS + k + 1; // Y4..Y10
+    const planYear = MONTHLY_YEARS + k + 1; // Y4..Y20
     const index = MONTHLY_PERIODS + k;
     periods.push({
       index,

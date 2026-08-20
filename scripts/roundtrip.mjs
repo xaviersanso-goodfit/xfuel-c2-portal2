@@ -22,10 +22,34 @@ chk("exit multiple preserved", inputs.parameters.exitMultiple === sc.parameters.
 chk("DSO/DPO preserved", inputs.parameters.dso===sc.parameters.dso && inputs.parameters.dpo===sc.parameters.dpo);
 chk("capex totals preserved", sc.capex.every((l,i)=>Math.abs(inputs.capex[i].total-l.total)<0.01));
 chk("capex phasing preserved", Math.abs(inputs.capex[0].phasing.reduce((a,b)=>a+b,0)-1)<1e-9);
+const priceLabel = `${sc.revenue[0].name} — Amount per ton`;
 chk(
   "price per ton preserved for every year",
-  inputs.unitEconomics.pricePerTon.every((v, y) => Math.abs(v - sc.unitEconomics.pricePerTon[y]) < 1e-9),
-  `got ${inputs.unitEconomics.pricePerTon}`
+  inputs.revenue[0].unitCost.every((v, y) => Math.abs(v - sc.revenue[0].unitCost[y]) < 1e-9),
+  `got ${inputs.revenue[0].unitCost}`
+);
+chk(
+  "every component survives the round trip",
+  inputs.revenue.length === sc.revenue.length &&
+    inputs.cogs.length === sc.cogs.length &&
+    inputs.opex.length === sc.opex.length
+);
+chk(
+  "component names and descriptions survive",
+  sc.cogs.every((c, i) => inputs.cogs[i].name === c.name && inputs.cogs[i].description === c.description)
+);
+chk(
+  "component bases survive",
+  sc.cogs.every((c, i) => inputs.cogs[i].basis === c.basis) &&
+    sc.opex.every((c, i) => inputs.opex[i].basis === c.basis)
+);
+chk(
+  "premium eligibility survives",
+  sc.revenue.every((c, i) => !!inputs.revenue[i].premiumEligible === !!c.premiumEligible)
+);
+chk(
+  "every COGS driver survives for every year",
+  sc.cogs.every((c, i) => c.unitCost.every((v, y) => Math.abs(v - inputs.cogs[i].unitCost[y]) < 1e-9)),
 );
 chk("utilisation preserved", inputs.unitEconomics.utilisation.every((v,i)=>Math.abs(v-(sc.unitEconomics.utilisation[i]||0))<1e-12));
 chk("personnel count preserved", inputs.personnel.length===sc.personnel.length);
@@ -45,30 +69,30 @@ chk("NPV identical after round-trip", Math.abs(a.valuation.projectNpv-b.valuatio
 // Simulate a user editing the workbook in Excel: change the price for every year.
 // The UnitEcon sheet carries each driver twice, as yearly inputs and as a
 // per-period expansion, so only the first (input) row is touched.
-const TOTAL_YEARS = 10;
+const TOTAL_YEARS = 20;
 const wb2 = buildWorkbook(sc);
 const ws = wb2.getWorksheet("UnitEcon");
 let priceRow = null;
-ws.eachRow(r => { if (priceRow === null && String(r.getCell(1).value).includes("Price per ton")) priceRow = r; });
+ws.eachRow(r => { if (priceRow === null && String(r.getCell(1).value) === priceLabel) priceRow = r; });
 for (let y = 0; y < TOTAL_YEARS; y++) priceRow.getCell(y + 2).value = 800;
 const buf2 = await wb2.xlsx.writeBuffer();
 const { inputs: edited } = await parseWorkbook(buf2);
-chk("edited price is picked up on import", edited.unitEconomics.pricePerTon.every(v => v === 800), `got ${edited.unitEconomics.pricePerTon}`);
+chk("edited price is picked up on import", edited.revenue[0].unitCost.every(v => v === 800), `got ${edited.revenue[0].unitCost}`);
 const m2 = runModel(edited);
 chk("edited price changes revenue", m2.results[STEADY].revenue > a.results[STEADY].revenue);
-chk("revenue scales exactly with price", Math.abs(m2.results[STEADY].revenue - a.results[STEADY].revenue*800/sc.unitEconomics.pricePerTon[0])<0.01);
+chk("revenue scales exactly with price", Math.abs(m2.results[STEADY].revenue - a.results[STEADY].revenue*800/sc.revenue[0].unitCost[0])<0.01);
 
 // A single-year edit must survive the round trip as a single-year change.
 const wb3 = buildWorkbook(sc);
 const ws3 = wb3.getWorksheet("UnitEcon");
 let priceRow3 = null;
-ws3.eachRow(r => { if (priceRow3 === null && String(r.getCell(1).value).includes("Price per ton")) priceRow3 = r; });
+ws3.eachRow(r => { if (priceRow3 === null && String(r.getCell(1).value) === priceLabel) priceRow3 = r; });
 priceRow3.getCell(2 + 5).value = 900; // Y6
 const { inputs: oneYear } = await parseWorkbook(await wb3.xlsx.writeBuffer());
 chk("a single-year price edit round-trips to that year only",
-  oneYear.unitEconomics.pricePerTon[5] === 900 &&
-  oneYear.unitEconomics.pricePerTon.filter(v => v === 900).length === 1,
-  `got ${oneYear.unitEconomics.pricePerTon}`);
+  oneYear.revenue[0].unitCost[5] === 900 &&
+  oneYear.revenue[0].unitCost.filter(v => v === 900).length === 1,
+  `got ${oneYear.revenue[0].unitCost}`);
 const m3 = runModel(oneYear);
 chk("a single-year price edit moves only that year's revenue",
   m3.results.every((r, i) => (m3.periods[i].year === 6 ? r.revenue > a.results[i].revenue : Math.abs(r.revenue - a.results[i].revenue) < 1e-6)));
@@ -79,12 +103,12 @@ chk("a single-year price edit moves only that year's revenue",
   const wbOld = buildWorkbook(sc);
   const wsOld = wbOld.getWorksheet("UnitEcon");
   let row = null;
-  wsOld.eachRow(r => { if (row === null && String(r.getCell(1).value).includes("Price per ton")) row = r; });
-  for (let y = 1; y < 10; y++) row.getCell(y + 2).value = null; // leave only Y1
+  wsOld.eachRow(r => { if (row === null && String(r.getCell(1).value) === priceLabel) row = r; });
+  for (let y = 1; y < TOTAL_YEARS; y++) row.getCell(y + 2).value = null; // leave only Y1
   const { inputs: legacy, notes: legacyNotes } = await parseWorkbook(await wbOld.xlsx.writeBuffer());
   chk("a single-value driver row imports as a flat series",
-    legacy.unitEconomics.pricePerTon.every(v => Math.abs(v - sc.unitEconomics.pricePerTon[0]) < 1e-9),
-    `got ${legacy.unitEconomics.pricePerTon}`);
+    legacy.revenue[0].unitCost.every(v => Math.abs(v - sc.revenue[0].unitCost[0]) < 1e-9),
+    `got ${legacy.revenue[0].unitCost}`);
   chk("importing a short driver row is reported in the notes",
     legacyNotes.some(n => n.includes("carried the last value forward")));
   const mOld = runModel(legacy);
@@ -94,6 +118,19 @@ chk("a single-year price edit moves only that year's revenue",
 // Inflation parameters must survive the round trip.
 chk("opex inflation round-trips", Math.abs(inputs.parameters.opexInflation - sc.parameters.opexInflation) < 1e-12);
 chk("compensation inflation round-trips", Math.abs(inputs.parameters.compensationInflation - sc.parameters.compensationInflation) < 1e-12);
+chk("revenue inflation round-trips", Math.abs(inputs.parameters.revenueInflation - sc.parameters.revenueInflation) < 1e-12);
+chk("COGS inflation round-trips", Math.abs(inputs.parameters.cogsInflation - sc.parameters.cogsInflation) < 1e-12);
+chk("sustainable premium round-trips", Math.abs(inputs.parameters.sustainablePremium - sc.parameters.sustainablePremium) < 1e-12);
+
+// The premium must survive as a live formula, not as a baked number: editing it
+// in Excel has to reprice revenue.
+{
+  const wbP = buildWorkbook({ ...sc, parameters: { ...sc.parameters, sustainablePremium: 1.7 } });
+  const { inputs: withPrem } = await parseWorkbook(await wbP.xlsx.writeBuffer());
+  chk("a premium set before export round-trips", Math.abs(withPrem.parameters.sustainablePremium - 1.7) < 1e-12);
+  const mp = runModel(withPrem);
+  chk("the imported premium reprices revenue", Math.abs(mp.results[STEADY].revenue - a.results[STEADY].revenue * 1.7) < 0.01);
+}
 
 if(notes.length) console.log("  notes: "+notes.join(" | "));
 console.log(fails===0 ? "\nROUND-TRIP OK\n" : `\n${fails} FAILED\n`);

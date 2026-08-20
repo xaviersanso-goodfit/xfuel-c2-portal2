@@ -12,7 +12,8 @@
     "roundtrip": "tsx scripts/roundtrip.mjs",
     "group": "tsx scripts/group.mjs",
     "ui": "tsx --tsconfig tsconfig.scripts.json scripts/ui-wiring.mjs",
-    "test": "npm run verify && npm run sensitivity && npm run roundtrip && npm run group && npm run ui && npm run typecheck"
+    "test": "npm run verify && npm run sensitivity && npm run roundtrip && npm run group && npm run changelog && npm run ui && npm run typecheck",
+    "changelog": "tsx scripts/changelog.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.2",

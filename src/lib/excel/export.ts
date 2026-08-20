@@ -4,6 +4,8 @@ import { extendYearly, normaliseGroup } from "../model/normalise";
 import { runGroup } from "../model/group";
 import { buildDebtFlows } from "../model/finance";
 import { runModel } from "../model/engine";
+import { BASIS_FIELD_LABELS, BASIS_USES } from "../model/components";
+import type { ModelComponent } from "../model/components";
 import type { Period, ScenarioInputs } from "../model/types";
 
 /**
@@ -71,6 +73,36 @@ class Book {
     const e = this.refs.get(key);
     if (!e) throw new Error(`Unknown row: ${key}`);
     return e.row;
+  }
+}
+
+/**
+ * Excel expression for one component in one period, mirroring the engine's
+ * evaluate(). The two must agree line for line: a divergence here shows up as
+ * an exported workbook that disagrees with the portal it came from.
+ *
+ * `tons` is passed in because revenue lines are driven by their own stream
+ * tonnage while COGS and OPEX lines are driven by total production.
+ */
+function componentExpr(
+  B: Book, c: ModelComponent, prefix: string, i: number, tons: string
+): string {
+  // Looked up lazily: a basis that does not use a field has no row for it.
+  const q = () => B.at(`${prefix}_${c.id}_q`, i);
+  const u = () => B.at(`${prefix}_${c.id}_u`, i);
+  switch (c.basis) {
+    case "perHour":
+      return `${B.at("hours", i)}*${q()}*${u()}/1000`;
+    case "perKwh":
+      return `${B.at("hours", i)}*${q()}*${u()}`;
+    case "perTon":
+      return `${tons}*${u()}`;
+    case "pctOfCapex":
+      return `${q()}*${B.at("capex_cum", i)}*${B.at("months", i)}*${B.at("util", i)}/12`;
+    case "fixedAnnual":
+      return `${u()}*${B.at("months", i)}/12`;
+    default:
+      return "0";
   }
 }
 
@@ -147,6 +179,9 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
     ["Opening cash", "opening_cash", p.openingCash, NUM],
     ["OPEX inflation (p.a.)", "opex_infl", p.opexInflation, PCT],
     ["Compensation inflation (p.a.)", "comp_infl", p.compensationInflation, PCT],
+    ["Revenue inflation (p.a.)", "rev_infl", p.revenueInflation, PCT],
+    ["COGS inflation (p.a.)", "cogs_infl", p.cogsInflation, PCT],
+    ["Sustainable premium (multiplier)", "premium", p.sustainablePremium, '0.00"x"'],
   ];
   for (const [label, key, value, fmt] of scalars) {
     const r = wsP.addRow([label, value]);
@@ -248,31 +283,56 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
   wsU.addRow([]);
   const ue = inputs.unitEconomics;
   const YEARS = TOTAL_YEARS;
-  const lastYearCol = colAt(YEARS - 1); // yearly block occupies B..K for 10 years
+  const lastYearCol = colAt(YEARS - 1); // the yearly block occupies B..<lastYearCol>
 
-  // Yearly inputs. Each driver gets one row across Y1..Y10.
+  // Yearly drivers. Every component contributes its own rows, so renaming a
+  // line or adding one changes the workbook without changing this code. The
+  // component id, not the label, is the key, so a rename does not break the
+  // round trip.
   const yearHead = wsU.addRow(["Driver — by plan year", ...Array.from({ length: YEARS }, (_, y) => `Y${y + 1}`)]);
   header(yearHead);
-  const ueYearly: [string, string, number[], string?][] = [
-    ["Price per ton MGO (EUR)", "price", extendYearly(ue.pricePerTon), "#,##0.00"],
+
+  const yearly: [string, string, number[], string?][] = [
     ["Annual operating hours at 100%", "hours_year", extendYearly(ue.annualHours)],
-    ["MGO yield (kg/h)", "mgo_kgh", extendYearly(ue.mgoYieldKgPerHour)],
-    ["MTS input (kg/h)", "mts_kgh", extendYearly(ue.mtsInputKgPerHour)],
-    ["Reactant input (kg/h)", "react_kgh", extendYearly(ue.reactantInputKgPerHour)],
-    ["Residue yield (kg/h)", "residue_kgh", extendYearly(ue.residueYieldKgPerHour)],
-    ["Water yield (kg/h)", "water_kgh", extendYearly(ue.waterYieldKgPerHour)],
-    ["MTS cost per ton", "mts_cost", extendYearly(ue.mtsCostPerTon), "#,##0.00"],
-    ["Reactant cost per ton", "react_cost", extendYearly(ue.reactantCostPerTon), "#,##0.00"],
-    ["Residue cost per ton", "residue_cost", extendYearly(ue.residueCostPerTon), "#,##0.00"],
-    ["Water cost per ton", "water_cost", extendYearly(ue.waterCostPerTon), "#,##0.00"],
-    ["Electricity price per kWh", "elec_price", extendYearly(ue.electricityPricePerKwh), "#,##0.0000"],
-    ["Electricity consumption (kWh/h)", "elec_kwh", extendYearly(ue.electricityKwhPerHour), "#,##0.00"],
-    ["Heat price per kWh", "heat_price", extendYearly(ue.heatPricePerKwh), "#,##0.0000"],
-    ["Heat consumption (kWh/h)", "heat_kwh", extendYearly(ue.heatKwhPerHour), "#,##0.00"],
-    ["Maintenance % p.a. of deployed CAPEX", "maint_pct", extendYearly(ue.maintenancePctOfCapex), PCT],
   ];
+  for (const c of inputs.revenue) {
+    yearly.push([`${c.name} — yield (kg/h)`, `rev_${c.id}_y`, extendYearly(c.yieldKgPerHour ?? [])]);
+    if (BASIS_USES[c.basis].quantity) {
+      yearly.push([`${c.name} — ${BASIS_FIELD_LABELS[c.basis].quantity}`, `rev_${c.id}_q`, extendYearly(c.quantity)]);
+    }
+    yearly.push([
+      `${c.name} — ${BASIS_FIELD_LABELS[c.basis].unitCost}`, `rev_${c.id}_u`, extendYearly(c.unitCost), "#,##0.00",
+    ]);
+  }
+  for (const c of inputs.cogs) {
+    if (BASIS_USES[c.basis].quantity) {
+      yearly.push([
+        `${c.name} — ${BASIS_FIELD_LABELS[c.basis].quantity}`, `cogs_${c.id}_q`, extendYearly(c.quantity),
+        c.basis === "pctOfCapex" ? PCT : "#,##0.00",
+      ]);
+    }
+    if (BASIS_USES[c.basis].unitCost) {
+      yearly.push([
+        `${c.name} — ${BASIS_FIELD_LABELS[c.basis].unitCost}`, `cogs_${c.id}_u`, extendYearly(c.unitCost), "#,##0.0000",
+      ]);
+    }
+  }
+  for (const c of inputs.opex) {
+    if (BASIS_USES[c.basis].quantity) {
+      yearly.push([
+        `${c.name} — ${BASIS_FIELD_LABELS[c.basis].quantity}`, `opex_${c.id}_q`, extendYearly(c.quantity),
+        c.basis === "pctOfCapex" ? PCT : "#,##0.00",
+      ]);
+    }
+    if (BASIS_USES[c.basis].unitCost) {
+      yearly.push([
+        `${c.name} — ${BASIS_FIELD_LABELS[c.basis].unitCost}`, `opex_${c.id}_u`, extendYearly(c.unitCost), NUM,
+      ]);
+    }
+  }
+
   const yearlyRowNo: Record<string, number> = {};
-  for (const [label, key, values, fmt] of ueYearly) {
+  for (const [label, key, values, fmt] of yearly) {
     const r = wsU.addRow([label, ...values]);
     if (fmt) for (let y = 0; y < YEARS; y++) r.getCell(y + FIRST_COL).numFmt = fmt;
     yearlyRowNo[key] = r.number;
@@ -280,7 +340,7 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
 
   wsU.addRow([]);
   periodHeader(wsU, "Driver — expanded to periods");
-  for (const [label, key, , fmt] of ueYearly) {
+  for (const [label, key, , fmt] of yearly) {
     const rowNo = yearlyRowNo[key];
     const r = formulaRow(
       wsU, label, n,
@@ -290,15 +350,33 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
     B.set(key, "UnitEcon", r.number);
   }
 
+  wsU.addRow([]);
+  periodHeader(wsU, "Escalation");
+  // Year 1 is the base, so the exponent is (plan year - 1). Quantities are
+  // physical and never inflate; only the money does.
+  const revFactor = formulaRow(
+    wsU, "Revenue escalation factor", n,
+    (i) => `POWER(1+${B.scalar("rev_infl")},${B.at("plan_year", i)}-1)`, "0.000"
+  );
+  B.set("rev_factor", "UnitEcon", revFactor.number);
+  const cogsFactor = formulaRow(
+    wsU, "COGS escalation factor", n,
+    (i) => `POWER(1+${B.scalar("cogs_infl")},${B.at("plan_year", i)}-1)`, "0.000"
+  );
+  B.set("cogs_factor", "UnitEcon", cogsFactor.number);
+
+  wsU.addRow([]);
+  periodHeader(wsU, "Volume");
+  // Nameplate capacity comes from the first revenue line, which is the primary
+  // product by definition. With no revenue lines there is no capacity.
+  const primary = inputs.revenue[0];
   const capacity = formulaRow(
     wsU, "Nameplate capacity (t/y)", n,
-    (i) => `${B.at("mgo_kgh", i)}*${B.at("hours_year", i)}/1000`,
+    (i) => (primary ? `${B.at(`rev_${primary.id}_y`, i)}*${B.at("hours_year", i)}/1000` : "0"),
     "#,##0.0"
   );
   B.set("capacity", "UnitEcon", capacity.number);
 
-  wsU.addRow([]);
-  periodHeader(wsU, "Volume");
   const utilRow = wsU.addRow(["Capacity utilisation %", ...fitArr(ue.utilisation, n)]);
   for (let i = 0; i < n; i++) utilRow.getCell(i + FIRST_COL).numFmt = PCT;
   B.set("util", "UnitEcon", utilRow.number);
@@ -359,28 +437,17 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
 
   wsO.addRow([]);
   const otherRows: number[] = [];
-  for (const cat of inputs.opex) {
-    const amtRow = wsO.addRow([`${cat.label} — amount`, ...fitArr(cat.amounts, n)]);
-    for (let i = 0; i < n; i++) amtRow.getCell(i + FIRST_COL).numFmt = NUM;
-    if (cat.pctOfCapexPerAnnum) {
-      const pctRow = wsO.addRow([`${cat.label} — % p.a. of deployed CAPEX`, cat.pctOfCapexPerAnnum]);
-      pctRow.getCell(2).numFmt = PCT;
-      // The CAPEX-linked component is not escalated: it already moves with the
-      // deployed asset base, so inflating it too would double count.
-      const out = formulaRow(
-        wsO, `${cat.label} — total`, n,
-        (i) =>
-          `${col(i)}${amtRow.number}*${col(i)}${opexFactor.number}` +
-          `+$B$${pctRow.number}*${B.at("capex_cum", i)}*${B.at("months", i)}/12`
-      );
-      otherRows.push(out.number);
-    } else {
-      const out = formulaRow(
-        wsO, `${cat.label} — total`, n,
-        (i) => `${col(i)}${amtRow.number}*${col(i)}${opexFactor.number}`
-      );
-      otherRows.push(out.number);
-    }
+  for (const c of inputs.opex) {
+    // The CAPEX-linked basis is not escalated: it already moves with the
+    // deployed asset base, so inflating it too would double count.
+    const out = formulaRow(
+      wsO, `${c.name} — total`, n,
+      (i) =>
+        c.basis === "pctOfCapex"
+          ? componentExpr(B, c, "opex", i, B.at("tons", i))
+          : `(${componentExpr(B, c, "opex", i, B.at("tons", i))})*${col(i)}${opexFactor.number}`
+    );
+    otherRows.push(out.number);
   }
   const otherTotal = formulaRow(wsO, "Total other OPEX", n, (i) =>
     otherRows.length ? otherRows.map((r) => `${col(i)}${r}`).join("+") : "0"
@@ -594,29 +661,51 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
   wsPL.addRow([]);
   periodHeader(wsPL, "P&L");
 
-  const revenue = formulaRow(wsPL, "Revenue", n, (i) => `${B.at("tons", i)}*${B.at("price", i)}`);
+  // Revenue, one row per line, split into the base price and the sustainable
+  // premium so the two are auditable separately in the workbook.
+  const streamTons = (c: ModelComponent, i: number) =>
+    `${B.at(`rev_${c.id}_y`, i)}*${B.at("hours_year", i)}/1000/12*${B.at("months", i)}*${B.at("util", i)}`;
+
+  const revBaseRows: number[] = [];
+  const revPremRows: number[] = [];
+  for (const c of inputs.revenue) {
+    const baseRow = formulaRow(
+      wsPL, `Revenue — ${c.name} (base price)`, n,
+      (i) => `(${componentExpr(B, c, "rev", i, streamTons(c, i))})*${B.at("rev_factor", i)}`
+    );
+    revBaseRows.push(baseRow.number);
+    const premRow = formulaRow(
+      wsPL, `Revenue — ${c.name} (sustainable premium)`, n,
+      // The premium multiplies the base price, so the uplift is (premium - 1).
+      (i) => (c.premiumEligible ? `${col(i)}${baseRow.number}*(${B.scalar("premium")}-1)` : "0")
+    );
+    revPremRows.push(premRow.number);
+  }
+  const revenueBase = formulaRow(wsPL, "Revenue — base price", n, (i) =>
+    revBaseRows.length ? revBaseRows.map((r) => `${col(i)}${r}`).join("+") : "0"
+  );
+  B.set("revenue_base", "P&L", revenueBase.number);
+  const revenuePrem = formulaRow(wsPL, "Revenue — sustainable premium", n, (i) =>
+    revPremRows.length ? revPremRows.map((r) => `${col(i)}${r}`).join("+") : "0"
+  );
+  B.set("revenue_premium", "P&L", revenuePrem.number);
+  const revenue = formulaRow(
+    wsPL, "Total revenue", n,
+    (i) => `${col(i)}${revenueBase.number}+${col(i)}${revenuePrem.number}`
+  );
+  subtotal(revenue);
   B.set("revenue", "P&L", revenue.number);
 
-  const energy = formulaRow(wsPL, "COGS — energy", n, (i) =>
-    `${B.at("hours", i)}*(${B.at("elec_price", i)}*${B.at("elec_kwh", i)}+${B.at("heat_price", i)}*${B.at("heat_kwh", i)})`
-  );
-  const mts = formulaRow(wsPL, "COGS — MTS feedstock", n, (i) =>
-    `${B.at("hours", i)}*${B.at("mts_kgh", i)}*${B.at("mts_cost", i)}/1000`
-  );
-  const reactants = formulaRow(wsPL, "COGS — reactants", n, (i) =>
-    `${B.at("hours", i)}*${B.at("react_kgh", i)}*${B.at("react_cost", i)}/1000`
-  );
-  const residue = formulaRow(wsPL, "COGS — residue disposal", n, (i) =>
-    `${B.at("hours", i)}*${B.at("residue_kgh", i)}*${B.at("residue_cost", i)}/1000`
-  );
-  const water = formulaRow(wsPL, "COGS — water", n, (i) =>
-    `${B.at("hours", i)}*${B.at("water_kgh", i)}*${B.at("water_cost", i)}/1000`
-  );
-  const maintenance = formulaRow(wsPL, "COGS — maintenance", n, (i) =>
-    `${B.at("maint_pct", i)}*${B.at("capex_cum", i)}*${B.at("months", i)}*${B.at("util", i)}/12`
-  );
+  const cogsRows: number[] = [];
+  for (const c of inputs.cogs) {
+    const r = formulaRow(
+      wsPL, `COGS — ${c.name}`, n,
+      (i) => `(${componentExpr(B, c, "cogs", i, B.at("tons", i))})*${B.at("cogs_factor", i)}`
+    );
+    cogsRows.push(r.number);
+  }
   const cogs = formulaRow(wsPL, "Total COGS", n, (i) =>
-    [energy, mts, reactants, residue, water, maintenance].map((r) => `${col(i)}${r.number}`).join("+")
+    cogsRows.length ? cogsRows.map((r) => `${col(i)}${r}`).join("+") : "0"
   );
   subtotal(cogs);
   const grossMargin = formulaRow(wsPL, "Gross margin", n, (i) => `${col(i)}${revenue.number}-${col(i)}${cogs.number}`);

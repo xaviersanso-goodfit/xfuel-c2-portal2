@@ -6,7 +6,7 @@ import { C } from "./palette";
 import { T } from "./text";
 
 const W = 1180;
-const H = 320;
+const H = 400;
 const PAD = 34;
 const BAR_TOP = 52;
 const BAR_H = 66;
@@ -30,6 +30,8 @@ export default function UnitEconomics({ inputs, model }: { inputs: ScenarioInput
 
   const trackW = W - PAD * 2;
   const scale = Math.max(u.pricePerTon, u.variableCostPerTon, 1);
+  const MARGIN_TOP = BAR_TOP + BAR_H + 96;
+  const MARGIN_H = 40;
   const px = (v: number) => (v / scale) * trackW;
 
   let cursor = PAD;
@@ -42,11 +44,11 @@ export default function UnitEconomics({ inputs, model }: { inputs: ScenarioInput
   const contribW = Math.max(0, PAD + px(u.pricePerTon) - cursor);
 
   const stats = [
-    { label: "Price per ton", value: eur2(u.pricePerTon) },
+    { label: "Base price per ton", value: eur2(u.basePricePerTon) },
+    { label: "Premium per ton", value: eur2(u.premiumPerTon), accent: true },
     { label: "Variable cost per ton", value: eur2(u.variableCostPerTon) },
     { label: "Contribution per ton", value: eur2(u.contributionPerTon), accent: true },
     { label: "Contribution margin", value: `${(u.contributionPct * 100).toFixed(1)}%`, accent: true },
-    { label: "Nameplate capacity", value: `${Math.round(u.nameplateTonsPerYear).toLocaleString("en-US")} t/y` },
     {
       label: "Steady-state output",
       value: `${Math.round(u.steadyTonsPerYear).toLocaleString("en-US")} t/y`,
@@ -63,7 +65,7 @@ export default function UnitEconomics({ inputs, model }: { inputs: ScenarioInput
 
   // Two rows of four. Leaders below the bar need clearance, so the grid starts
   // below the deepest possible callout.
-  const STAT_TOP = BAR_TOP + BAR_H + 78;
+  const STAT_TOP = BAR_TOP + BAR_H + 168;
   const colW = trackW / 4;
 
   return (
@@ -72,7 +74,8 @@ export default function UnitEconomics({ inputs, model }: { inputs: ScenarioInput
         PER TON OF PRODUCT
       </text>
       <text {...T.msDetail} x={PAD} y={BAR_TOP - 10}>
-        Full bar = selling price {eur2(u.pricePerTon)} per ton. Segments are variable cost at full utilisation.
+        Full bar = realised price {eur2(u.pricePerTon)} per ton, of which {eur2(u.basePricePerTon)} base and{" "}
+        {eur2(u.premiumPerTon)} sustainable premium. Segments are variable cost at full utilisation.
       </text>
 
       <rect x={PAD} y={BAR_TOP} width={px(u.pricePerTon)} height={BAR_H} rx={4} fill="#F2F6FB" />
@@ -120,6 +123,44 @@ export default function UnitEconomics({ inputs, model }: { inputs: ScenarioInput
           </text>
         </>
       ) : null}
+
+      {/* Where the margin comes from. The premium carries no incremental cost,
+          so every euro of it lands in margin, which is the point of the split. */}
+      <text {...T.panel} x={PAD} y={MARGIN_TOP - 12}>
+        CONTRIBUTION BY SOURCE
+      </text>
+      {(() => {
+        const total = Math.max(Math.abs(u.contributionBasePerTon) + Math.abs(u.contributionPremiumPerTon), 0.0001);
+        const baseW = (Math.max(0, u.contributionBasePerTon) / total) * trackW;
+        const premW = (Math.max(0, u.contributionPremiumPerTon) / total) * trackW;
+        return (
+          <g>
+            <rect x={PAD} y={MARGIN_TOP} width={Math.max(0, baseW - 1)} height={MARGIN_H} fill={C.good} rx={3} />
+            <rect x={PAD + baseW} y={MARGIN_TOP} width={Math.max(0, premW - 1)} height={MARGIN_H} fill={C.brand} rx={3} />
+            {baseW > 150 ? (
+              <>
+                <text {...T.segIn} x={PAD + 10} y={MARGIN_TOP + 17}>Base price contribution</text>
+                <text {...T.segIn} x={PAD + 10} y={MARGIN_TOP + 32} fillOpacity={0.92}>
+                  {eur2(u.contributionBasePerTon)} per ton
+                </text>
+              </>
+            ) : null}
+            {premW > 150 ? (
+              <>
+                <text {...T.segIn} x={PAD + baseW + 10} y={MARGIN_TOP + 17}>Sustainable premium</text>
+                <text {...T.segIn} x={PAD + baseW + 10} y={MARGIN_TOP + 32} fillOpacity={0.92}>
+                  {eur2(u.contributionPremiumPerTon)} per ton
+                </text>
+              </>
+            ) : null}
+            {premW <= 1 ? (
+              <text {...T.segOut} x={PAD + Math.max(baseW, 4) + 10} y={MARGIN_TOP + 26}>
+                no premium set
+              </text>
+            ) : null}
+          </g>
+        );
+      })()}
 
       {stats.map((s, i) => {
         const sx = PAD + (i % 4) * colW;

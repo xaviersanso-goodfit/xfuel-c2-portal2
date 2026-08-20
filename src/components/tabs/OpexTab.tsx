@@ -1,6 +1,8 @@
 "use client";
 
+import ComponentEditor from "../ComponentEditor";
 import { Field, InputRow, PeriodHead, ValueRow } from "../Grid";
+import { OPEX_BASES } from "@/lib/model/components";
 import { fmt } from "@/lib/format";
 import { PERIOD_COUNT, zeroes } from "@/lib/model/periods";
 import type { ModelOutputs, OpexCategory, PersonnelArchetype, ScenarioInputs } from "@/lib/model/types";
@@ -24,9 +26,6 @@ export default function OpexTab({
     emit({ ...inputs, personnel: inputs.personnel.map((a, i) => (i === idx ? { ...a, ...patch } : a)) });
   const p = inputs.parameters;
   const setP = (patch: Partial<typeof p>) => emit({ ...inputs, parameters: { ...p, ...patch } });
-  const setCat = (idx: number, patch: Partial<OpexCategory>) =>
-    emit({ ...inputs, opex: inputs.opex.map((c, i) => (i === idx ? { ...c, ...patch } : c)) });
-
   const addArch = () =>
     emit({
       ...inputs,
@@ -37,13 +36,6 @@ export default function OpexTab({
     });
   const removeArch = (idx: number) =>
     emit({ ...inputs, personnel: inputs.personnel.filter((_, i) => i !== idx) });
-
-  const addCat = () =>
-    emit({
-      ...inputs,
-      opex: [...inputs.opex, { id: `cat_${Date.now()}`, label: "New category", amounts: zeroes(PERIOD_COUNT) }],
-    });
-  const removeCat = (idx: number) => emit({ ...inputs, opex: inputs.opex.filter((_, i) => i !== idx) });
 
   const lastIdx = R.length - 1;
   const steadyFte = inputs.personnel.reduce((a, p) => a + (p.ftes[lastIdx] ?? 0), 0);
@@ -162,7 +154,7 @@ export default function OpexTab({
               {inputs.personnel.map((a, idx) => (
                 <InputRow
                   key={a.id} label={a.label} values={a.ftes} periods={periods} editable={editable} step="0.1"
-                  onChange={(next) => setArch(idx, { ftes: next })}
+                  onChange={(next: number[]) => setArch(idx, { ftes: next })}
                 />
               ))}
               <ValueRow
@@ -176,62 +168,32 @@ export default function OpexTab({
         </div>
       </div>
 
-      <div className="card">
-        <h3>Other OPEX categories</h3>
-        <table className="list">
-          <thead>
-            <tr>
-              <th>Category</th>
-              <th style={{ textAlign: "right" }}>% p.a. of deployed CAPEX (optional)</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {inputs.opex.map((c, idx) => (
-              <tr key={c.id}>
-                <td>
-                  <input
-                    className="cell" style={{ width: 280, textAlign: "left" }} type="text" disabled={!editable}
-                    value={c.label} onChange={(e) => setCat(idx, { label: e.target.value })}
-                  />
-                </td>
-                <td style={{ textAlign: "right" }}>
-                  <input
-                    className="cell" style={{ width: 90 }} type="number" step="0.01" disabled={!editable}
-                    value={c.pctOfCapexPerAnnum ? Math.round(c.pctOfCapexPerAnnum * 1e6) / 1e4 : 0}
-                    onChange={(e) => {
-                      const v = (Number(e.target.value) || 0) / 100;
-                      setCat(idx, { pctOfCapexPerAnnum: v > 0 ? v : undefined });
-                    }}
-                  />
-                </td>
-                <td style={{ textAlign: "right" }}>
-                  {editable && <button className="btn danger sm" onClick={() => removeCat(idx)}>Remove</button>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {editable && (
-          <div style={{ marginTop: 12 }}>
-            <button className="btn ghost sm" onClick={addCat}>+ Add category</button>
-          </div>
-        )}
-      </div>
+      <ComponentEditor
+        kind="opex"
+        title="Other OPEX lines"
+        intro="Operating costs outside payroll. Each line can be a fixed annual amount, a percentage per annum of deployed CAPEX, or an amount per ton of product. Fixed amounts are entered in year 1 money and escalated by the OPEX inflation rate; the CAPEX-linked basis is not escalated, because it already moves with the asset base."
+        components={inputs.opex}
+        bases={OPEX_BASES}
+        editable={editable}
+        onChange={(next) => emit({ ...inputs, opex: next })}
+      />
 
       <div className="card">
-        <h3>Other OPEX by period (fixed amounts, EUR)</h3>
+        <h3>OPEX by period</h3>
         <div className="tbl-wrap">
           <table className="fin">
-            <PeriodHead periods={periods} first="Category" />
+            <PeriodHead periods={periods} first="Line" />
             <tbody>
-              {inputs.opex.map((c, idx) => (
-                <InputRow
-                  key={c.id} label={c.label} values={c.amounts} periods={periods} editable={editable}
-                  onChange={(next) => setCat(idx, { amounts: next })}
+              <ValueRow label="Personnel" values={R.map((r) => r.opexPersonnel)} periods={periods} />
+              {inputs.opex.map((c) => (
+                <ValueRow
+                  key={c.id}
+                  label={c.name}
+                  values={R.map((r) => r.opexByComponent[c.id] ?? 0)}
+                  periods={periods}
                 />
               ))}
-              <ValueRow label="Total other OPEX (incl. % of CAPEX)" values={R.map((r) => r.opexOther)} periods={periods} bold />
+              <ValueRow label="Total other OPEX" values={R.map((r) => r.opexOther)} periods={periods} bold />
               <ValueRow label="Total OPEX" values={R.map((r) => r.opexTotal)} periods={periods} bold />
               <ValueRow label="EBITDA" values={R.map((r) => r.ebitda)} periods={periods} bold />
             </tbody>

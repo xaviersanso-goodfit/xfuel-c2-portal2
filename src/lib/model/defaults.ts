@@ -70,6 +70,11 @@ export function defaultScenario(): ScenarioInputs {
       openingCash: 0,
       opexInflation: 0.02,
       compensationInflation: 0.025,
+      revenueInflation: 0.02,
+      cogsInflation: 0.02,
+      // 1.0 means no premium. The FAIIP price is a base price, so the seeded
+      // case carries no uplift until XFuel sets one.
+      sustainablePremium: 1.0,
     },
     capex: [
       {
@@ -106,24 +111,81 @@ export function defaultScenario(): ScenarioInputs {
       },
     ],
     unitEconomics: {
-      pricePerTon: flat(688.8469),
       annualHours: flat(8000),
-      mgoYieldKgPerHour: flat(1840),
-      mtsInputKgPerHour: flat(2000),
-      reactantInputKgPerHour: flat(50),
-      residueYieldKgPerHour: flat(210),
-      waterYieldKgPerHour: flat(0),
-      mtsCostPerTon: flat(180.2806),
-      reactantCostPerTon: flat(3670),
-      residueCostPerTon: flat(360),
-      waterCostPerTon: flat(0),
-      electricityPricePerKwh: flat(0.1088692),
-      electricityKwhPerHour: flat(138.53),
-      heatPricePerKwh: flat(0.075),
-      heatKwhPerHour: flat(515.5),
-      maintenancePctOfCapex: flat(0.04),
       utilisation: rampUtilisation(),
     },
+    // Revenue, COGS and OPEX are editable lists. Names and descriptions can be
+    // changed in the portal; the ids are what the changelog and Excel key on.
+    revenue: [
+      {
+        id: "mgo",
+        name: "MGO",
+        description: "Marine gas oil, the primary product. Yield and price from the FAIIP business model.",
+        basis: "perTon",
+        premiumEligible: true,
+        yieldKgPerHour: flat(1840),
+        quantity: flat(0),
+        unitCost: flat(688.8469),
+      },
+    ],
+    cogs: [
+      {
+        id: "mts",
+        name: "MTS feedstock",
+        description: "Mixed tyre shred fed to the reactor, priced per ton delivered.",
+        basis: "perHour",
+        quantity: flat(2000),
+        unitCost: flat(180.2806),
+      },
+      {
+        id: "reactants",
+        name: "Reactants",
+        description: "Process reactants consumed per operating hour.",
+        basis: "perHour",
+        quantity: flat(50),
+        unitCost: flat(3670),
+      },
+      {
+        id: "residue",
+        name: "Residue disposal",
+        description: "Solid residue removed from site and disposed of, charged per ton.",
+        basis: "perHour",
+        quantity: flat(210),
+        unitCost: flat(360),
+      },
+      {
+        id: "water",
+        name: "Water",
+        description: "Process water. Zero in the base case; set a yield and a cost per ton to activate.",
+        basis: "perHour",
+        quantity: flat(0),
+        unitCost: flat(0),
+      },
+      {
+        id: "electricity",
+        name: "Electricity",
+        description: "Grid electricity consumed by the plant, at the contracted price per kWh.",
+        basis: "perKwh",
+        quantity: flat(138.53),
+        unitCost: flat(0.1088692),
+      },
+      {
+        id: "heat",
+        name: "Heat",
+        description: "Process heat consumed per operating hour, at the contracted price per kWh.",
+        basis: "perKwh",
+        quantity: flat(515.5),
+        unitCost: flat(0.075),
+      },
+      {
+        id: "maintenance",
+        name: "Maintenance",
+        description: "Plant maintenance, run as a percentage per annum of deployed CAPEX.",
+        basis: "pctOfCapex",
+        quantity: flat(0.04),
+        unitCost: flat(0),
+      },
+    ],
     personnel: [
       { id: "gm", label: "General manager", annualCost: 126_000, ftes: fteProfile(1) },
       { id: "qa", label: "QA & HR supervisor", annualCost: 73_450, ftes: fteProfile(1) },
@@ -136,12 +198,29 @@ export function defaultScenario(): ScenarioInputs {
     opex: [
       {
         id: "insurance",
-        label: "Insurance (% of deployed CAPEX)",
-        amounts: zeroes(PERIOD_COUNT),
-        pctOfCapexPerAnnum: 0.015,
+        name: "Insurance",
+        description: "Plant and liability insurance, entered as an annual amount.",
+        basis: "fixedAnnual",
+        quantity: flat(0),
+        // Was 1.5% of deployed CAPEX, which on the seeded 27.2M build is c. 409k.
+        unitCost: insuranceAmount(),
       },
-      { id: "admin_oh", label: "Admin overhead", amounts: adminOverhead() },
-      { id: "land_lease", label: "Land cost (leasing)", amounts: zeroes(PERIOD_COUNT) },
+      {
+        id: "admin_oh",
+        name: "Admin overhead",
+        description: "Site administration and corporate recharges.",
+        basis: "fixedAnnual",
+        quantity: flat(0),
+        unitCost: adminOverheadYearly(),
+      },
+      {
+        id: "land_lease",
+        name: "Land lease",
+        description: "Ground rent, where the plot is leased rather than owned.",
+        basis: "fixedAnnual",
+        quantity: flat(0),
+        unitCost: flat(0),
+      },
     ],
     instruments: [
       {
@@ -174,10 +253,28 @@ export function defaultScenario(): ScenarioInputs {
   };
 }
 
-function adminOverhead(): number[] {
-  const a = zeroes(PERIOD_COUNT);
-  // 10,000 per month once the site is staffed; annual periods carry 12 months.
-  for (let i = OPS_START_PERIOD - 3; i < MONTHLY_PERIODS; i++) a[i] = 10_000;
-  for (let i = MONTHLY_PERIODS; i < PERIOD_COUNT; i++) a[i] = 120_000;
+/**
+ * Admin overhead by plan year. Nothing before the site is staffed, then 120k a
+ * year once operations begin.
+ */
+function adminOverheadYearly(): number[] {
+  const a = new Array(TOTAL_YEARS).fill(0);
+  const firstStaffedYear = Math.max(0, Math.floor((OPS_START_PERIOD - 3) / 12));
+  for (let y = firstStaffedYear; y < TOTAL_YEARS; y++) a[y] = 120_000;
+  return a;
+}
+
+/**
+ * Insurance as an annual amount rather than a percentage of CAPEX.
+ *
+ * The v1 model charged 1.5% per annum of deployed CAPEX. On the seeded 27.2M
+ * build that is about 409k a year once fully deployed, which is the figure
+ * carried here so the base case does not move when the basis changes. Nothing
+ * now recalculates it; edit the amount directly.
+ */
+function insuranceAmount(): number[] {
+  const a = new Array(TOTAL_YEARS).fill(0);
+  const firstYear = Math.max(0, Math.floor(OPS_START_PERIOD / 12));
+  for (let y = firstYear; y < TOTAL_YEARS; y++) a[y] = 408_535;
   return a;
 }

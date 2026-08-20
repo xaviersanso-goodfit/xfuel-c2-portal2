@@ -29,8 +29,8 @@ export default function ParametersTab({
     <>
       <div className="page-title">Global parameters</div>
       <div className="page-sub">
-        Plan inputs and headline outputs. All figures in EUR. Horizon: monthly for Y1 to Y3, annual to Y10, with an
-        exit at the end of Y10.
+        Plan inputs and headline outputs. All figures in EUR. Horizon: monthly for Y1 to Y3, annual to Y20, with an
+        exit at the end of Y20.
       </div>
 
       {/* ---------- cover ---------- */}
@@ -104,7 +104,26 @@ export default function ParametersTab({
         </div>
 
         <div className="card">
-          <h3>Inflation</h3>
+          <h3>Revenue</h3>
+          <Field
+            label="Sustainable premium (multiplier)" value={p.sustainablePremium} step="0.01" editable={editable}
+            onChange={(x) => setP({ sustainablePremium: Number(x) || 0 })}
+            hint="1.00 means no premium. 1.70 means the realised price is 1.70x the base price, so 0.70x is the green premium. Applies only to revenue lines flagged premium eligible."
+          />
+          <Field
+            label="Revenue inflation (% p.a.)" value={p.revenueInflation} scale={100} step="0.1" editable={editable}
+            onChange={(x) => setP({ revenueInflation: (Number(x) || 0) / 100 })}
+            hint="Escalates every revenue unit economic, for example price per ton. Compounds from year 1, which is the base."
+          />
+          <Field
+            label="COGS inflation (% p.a.)" value={p.cogsInflation} scale={100} step="0.1" editable={editable}
+            onChange={(x) => setP({ cogsInflation: (Number(x) || 0) / 100 })}
+            hint="Escalates every COGS unit economic, for example feedstock cost per ton and energy price per kWh. Quantities are physical and do not inflate."
+          />
+        </div>
+
+        <div className="card">
+          <h3>Cost inflation</h3>
           <Field
             label="OPEX inflation (% p.a.)" value={p.opexInflation} scale={100} step="0.1" editable={editable}
             onChange={(x) => setP({ opexInflation: (Number(x) || 0) / 100 })}
@@ -135,7 +154,7 @@ export default function ParametersTab({
           <Field
             label="Exit EV/EBITDA multiple" value={p.exitMultiple} editable={editable} step="0.1"
             onChange={(x) => setP({ exitMultiple: Number(x) || 0 })}
-            hint="Applied to final-year EBITDA at the end of Y10."
+            hint="Applied to final-year EBITDA at the end of Y20."
           />
         </div>
       </div>

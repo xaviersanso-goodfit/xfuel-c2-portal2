@@ -146,3 +146,38 @@ create policy commentary_write on public.commentary
 -- 5. Promote yourself to editor after first sign-in:
 --     update public.profiles set role = 'editor' where email = 'you@xfuel.com';
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- 5. Change log: a field-level audit trail of scenario edits.
+-- ---------------------------------------------------------------------------
+-- Append only by design. Editors may insert; nobody may update or delete, so
+-- the history cannot be rewritten from the application. Any authenticated user
+-- can read it, on the view that an audit trail nobody can see is not an audit
+-- trail.
+create table if not exists public.change_log (
+  id           uuid primary key default gen_random_uuid(),
+  scenario_id  uuid references public.scenarios on delete cascade,
+  scenario_name text not null default '',
+  user_id      uuid references auth.users on delete set null,
+  user_email   text not null default '',
+  field_key    text not null,
+  field_label  text not null,
+  old_value    text not null default '',
+  new_value    text not null default '',
+  changed_at   timestamptz not null default now()
+);
+
+create index if not exists change_log_scenario_idx on public.change_log (scenario_id, changed_at desc);
+create index if not exists change_log_time_idx on public.change_log (changed_at desc);
+
+alter table public.change_log enable row level security;
+
+drop policy if exists change_log_select on public.change_log;
+create policy change_log_select on public.change_log
+  for select to authenticated using (true);
+
+drop policy if exists change_log_insert on public.change_log;
+create policy change_log_insert on public.change_log
+  for insert to authenticated with check (public.is_editor());
+
+-- No update or delete policy is defined, so both are denied for everyone.

@@ -5,23 +5,27 @@ import { PeriodHead, ValueRow } from "../Grid";
 import type { ModelOutputs, PeriodResult, ScenarioInputs } from "@/lib/model/types";
 import { fmt } from "@/lib/format";
 
-type Line = { label: string; key?: keyof PeriodResult; bold?: boolean; section?: boolean };
+type Line = {
+  label: string;
+  key?: keyof PeriodResult;
+  bold?: boolean;
+  section?: boolean;
+  /** Component id, for lines driven by the editable revenue/COGS/OPEX lists. */
+  component?: { block: "revenueByComponent" | "cogsByComponent" | "opexByComponent"; id: string };
+};
 
 const PNL_LINES: Line[] = [
   { label: "Revenue", section: true },
-  { label: "Revenue", key: "revenue", bold: true },
+  { label: "Revenue at base price", key: "revenueBase" },
+  { label: "Sustainable premium", key: "revenuePremium" },
+  { label: "Total revenue", key: "revenue", bold: true },
   { label: "Cost of goods sold", section: true },
-  { label: "Energy", key: "cogsEnergy" },
-  { label: "MTS feedstock", key: "cogsMts" },
-  { label: "Reactants", key: "cogsReactants" },
-  { label: "Residue disposal", key: "cogsResidue" },
-  { label: "Water", key: "cogsWater" },
-  { label: "Maintenance", key: "cogsMaintenance" },
+  { label: "__COGS_COMPONENTS__" },
   { label: "Total COGS", key: "cogs", bold: true },
   { label: "Gross margin", key: "grossMargin", bold: true },
   { label: "Operating expenses", section: true },
   { label: "Personnel", key: "opexPersonnel" },
-  { label: "Other OPEX", key: "opexOther" },
+  { label: "__OPEX_COMPONENTS__" },
   { label: "Total OPEX", key: "opexTotal", bold: true },
   { label: "EBITDA", key: "ebitda", bold: true },
   { label: "Below EBITDA", section: true },
@@ -103,19 +107,42 @@ export default function StatementTab({
           <table className="fin">
             <PeriodHead periods={periods} first={title} />
             <tbody>
-              {lines.map((line, i) =>
-                line.section ? (
-                  <ValueRow key={`s${i}`} label={line.label} values={[]} periods={periods} section />
-                ) : (
+              {lines.flatMap((line, i) => {
+                if (line.section) {
+                  return [<ValueRow key={`s${i}`} label={line.label} values={[]} periods={periods} section />];
+                }
+                // Placeholders expand into one row per editable component, so
+                // renaming or adding a COGS line shows up here without a code change.
+                if (line.label === "__COGS_COMPONENTS__") {
+                  return inputs.cogs.map((c) => (
+                    <ValueRow
+                      key={`cogs-${c.id}`}
+                      label={c.name}
+                      values={data.map((r) => r.cogsByComponent?.[c.id] ?? 0)}
+                      periods={periods}
+                    />
+                  ));
+                }
+                if (line.label === "__OPEX_COMPONENTS__") {
+                  return inputs.opex.map((c) => (
+                    <ValueRow
+                      key={`opex-${c.id}`}
+                      label={c.name}
+                      values={data.map((r) => r.opexByComponent?.[c.id] ?? 0)}
+                      periods={periods}
+                    />
+                  ));
+                }
+                return [
                   <ValueRow
                     key={line.key as string}
                     label={line.label}
                     values={data.map((r) => r[line.key!] as number)}
                     periods={periods}
                     bold={line.bold}
-                  />
-                )
-              )}
+                  />,
+                ];
+              })}
             </tbody>
           </table>
         </div>

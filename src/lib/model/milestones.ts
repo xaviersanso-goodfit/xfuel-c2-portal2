@@ -1,4 +1,3 @@
-import { extendYearly } from "./normalise";
 import type { ModelOutputs, ScenarioInputs } from "./types";
 
 export interface Milestone {
@@ -11,6 +10,14 @@ export interface Milestone {
 
 export interface UnitEconomicsSummary {
   pricePerTon: number;
+  /** Price before the sustainable premium. */
+  basePricePerTon: number;
+  /** The premium uplift per ton. */
+  premiumPerTon: number;
+  /** Contribution attributable to the base price. */
+  contributionBasePerTon: number;
+  /** Contribution attributable to the premium. */
+  contributionPremiumPerTon: number;
   /** Variable cost per ton of product at full utilisation, by component. */
   components: { key: string; label: string; perTon: number }[];
   variableCostPerTon: number;
@@ -113,62 +120,42 @@ export function buildMilestones(inputs: ScenarioInputs, model: ModelOutputs): Mi
  * price stack is directly comparable line by line.
  */
 export function buildUnitEconomics(inputs: ScenarioInputs, model: ModelOutputs): UnitEconomicsSummary {
-  // Steady state is the final period, which is past the ramp. Every driver is a
-  // yearly series, so read each one at that period's plan year rather than
-  // assuming a single figure holds for the whole plan.
+  // Steady state is the final period, which is past the ramp. Everything is read
+  // off the computed result rather than re-derived, so the panel cannot drift
+  // from the engine when a component is added or its basis changed.
   const lastIdx = model.results.length - 1;
   const steady = model.results[lastIdx];
-  const y = Math.max(0, (model.periods[lastIdx]?.year ?? 1) - 1);
-  const at = (v: number[] | number | undefined) => extendYearly(v)[y] ?? 0;
+  const year = model.periods[lastIdx]?.year ?? 1;
+  const tons = steady?.tons ?? 0;
+  const perTon = (v: number) => (tons > 0 ? v / tons : 0);
 
-  const ue = inputs.unitEconomics;
-  const mgoKgH = at(ue.mgoYieldKgPerHour);
-  const hours = at(ue.annualHours);
-  const nameplate = (mgoKgH * hours) / 1000;
+  const components = (inputs.cogs ?? [])
+    .map((c) => ({ key: c.id, label: c.name, perTon: perTon(steady?.cogsByComponent?.[c.id] ?? 0) }))
+    .filter((c) => Math.abs(c.perTon) > 0.005);
 
-  // Per hour the plant makes mgoKgH/1000 tons, so dividing an hourly cost by
-  // that yield gives cost per ton of product.
-  const tonsPerHour = mgoKgH / 1000;
-  const perTon = (costPerHour: number) => (tonsPerHour > 0 ? costPerHour / tonsPerHour : 0);
-
-  const energyPerHour =
-    at(ue.electricityPricePerKwh) * at(ue.electricityKwhPerHour) +
-    at(ue.heatPricePerKwh) * at(ue.heatKwhPerHour);
-
-  const components = [
-    { key: "mts", label: "MTS feedstock", perTon: perTon((at(ue.mtsInputKgPerHour) * at(ue.mtsCostPerTon)) / 1000) },
-    {
-      key: "reactants",
-      label: "Reactants",
-      perTon: perTon((at(ue.reactantInputKgPerHour) * at(ue.reactantCostPerTon)) / 1000),
-    },
-    { key: "energy", label: "Energy", perTon: perTon(energyPerHour) },
-    {
-      key: "residue",
-      label: "Residue disposal",
-      perTon: perTon((at(ue.residueYieldKgPerHour) * at(ue.residueCostPerTon)) / 1000),
-    },
-    { key: "water", label: "Water", perTon: perTon((at(ue.waterYieldKgPerHour) * at(ue.waterCostPerTon)) / 1000) },
-  ].filter((c) => Math.abs(c.perTon) > 0.005);
-
-  const variableCostPerTon = components.reduce((a, c) => a + c.perTon, 0);
-  const pricePerTon = at(ue.pricePerTon);
+  const variableCostPerTon = perTon(steady?.cogs ?? 0);
+  const basePricePerTon = perTon(steady?.revenueBase ?? 0);
+  const premiumPerTon = perTon(steady?.revenuePremium ?? 0);
+  const pricePerTon = basePricePerTon + premiumPerTon;
   const contributionPerTon = pricePerTon - variableCostPerTon;
-  const steadyUtilisation = steady?.utilisation ?? 0;
 
   return {
     pricePerTon,
+    basePricePerTon,
+    premiumPerTon,
     components,
     variableCostPerTon,
     contributionPerTon,
     contributionPct: pricePerTon > 0 ? contributionPerTon / pricePerTon : 0,
-    nameplateTonsPerYear: nameplate,
-    steadyUtilisation,
-    steadyTonsPerYear: steady?.tons ?? 0,
+    /** Margin split: what the base price contributes, and what the premium adds. */
+    contributionBasePerTon: basePricePerTon - variableCostPerTon,
+    contributionPremiumPerTon: premiumPerTon,
+    nameplateTonsPerYear: steady?.nameplateTonsPerYear ?? 0,
+    steadyUtilisation: steady?.utilisation ?? 0,
+    steadyTonsPerYear: tons,
     steadyRevenue: steady?.revenue ?? 0,
     steadyEbitda: steady?.ebitda ?? 0,
     steadyEbitdaMargin: steady && steady.revenue > 0 ? steady.ebitda / steady.revenue : 0,
-    /** Plan year the per-ton figures are quoted in. */
-    year: y + 1,
+    year,
   };
 }

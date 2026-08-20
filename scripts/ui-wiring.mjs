@@ -25,7 +25,9 @@ const React = (await import("react")).default;
 const { render, fireEvent, cleanup, within } = await import("@testing-library/react");
 const { runModel } = await import("../src/lib/model/engine.ts");
 const { defaultScenario } = await import("../src/lib/model/defaults.ts");
-const { PERIOD_COUNT } = await import("../src/lib/model/periods.ts");
+const { PERIOD_COUNT, TOTAL_YEARS } = await import("../src/lib/model/periods.ts");
+const { BASIS_USES, BASIS_FIELD_LABELS } = await import("../src/lib/model/components.ts");
+const { normaliseScenario } = await import("../src/lib/model/normalise.ts");
 
 const ParametersTab = (await import("../src/components/tabs/ParametersTab.tsx")).default;
 const CapexTab = (await import("../src/components/tabs/CapexTab.tsx")).default;
@@ -131,59 +133,120 @@ console.log("\n-- CAPEX tab --");
 console.log("\n-- Unit economics tab --");
 {
   const t = mount(UnitEconTab);
-  const TOTAL_YEARS = 10;
-  const tables = Array.from(t.container.querySelectorAll("table.fin"));
-  const yearTable = tables[0];
-  const volTable = tables[1];
-
-  /** Find a driver row in the yearly table by its rendered label. */
-  const yearRow = (label) =>
-    Array.from(yearTable.querySelectorAll("tbody tr")).find(
+  const cards = Array.from(t.container.querySelectorAll(".card"));
+  /** The card whose name input holds this component's name. */
+  const cardFor = (name) =>
+    cards.find((c) => {
+      const n = c.querySelector("input.comp-name");
+      return n && n.value === name;
+    });
+  const rowIn = (card, label) =>
+    Array.from(card.querySelectorAll("tbody tr")).find(
       (tr) => tr.cells[0] && tr.cells[0].textContent.trim() === label
     );
 
-  const cases = [
-    ["Price per ton MGO (EUR)", "900", (s) => s.unitEconomics.pricePerTon, 900],
-    ["Annual operating hours at 100%", "7500", (s) => s.unitEconomics.annualHours, 7500],
-    ["MGO yield (kg/h)", "2000", (s) => s.unitEconomics.mgoYieldKgPerHour, 2000],
-    ["MTS input (kg/h)", "2100", (s) => s.unitEconomics.mtsInputKgPerHour, 2100],
-    ["Reactant input (kg/h)", "60", (s) => s.unitEconomics.reactantInputKgPerHour, 60],
-    ["Residue yield (kg/h)", "220", (s) => s.unitEconomics.residueYieldKgPerHour, 220],
-    ["Water yield (kg/h)", "10", (s) => s.unitEconomics.waterYieldKgPerHour, 10],
-    ["MTS feedstock", "200", (s) => s.unitEconomics.mtsCostPerTon, 200],
-    ["Reactants", "4000", (s) => s.unitEconomics.reactantCostPerTon, 4000],
-    ["Residue disposal", "400", (s) => s.unitEconomics.residueCostPerTon, 400],
-    ["Water", "3", (s) => s.unitEconomics.waterCostPerTon, 3],
-    ["Maintenance (% p.a. of deployed CAPEX)", "5", (s) => s.unitEconomics.maintenancePctOfCapex, 0.05],
-    ["Electricity price (EUR/kWh)", "0.15", (s) => s.unitEconomics.electricityPricePerKwh, 0.15],
-    ["Electricity consumption (kWh/h)", "150", (s) => s.unitEconomics.electricityKwhPerHour, 150],
-    ["Heat price (EUR/kWh)", "0.09", (s) => s.unitEconomics.heatPricePerKwh, 0.09],
-    ["Heat consumption (kWh/h)", "530", (s) => s.unitEconomics.heatKwhPerHour, 530],
-  ];
-  for (const [label, typed, get, expected] of cases) {
-    const row = yearRow(label);
-    if (!row) { check(`driver row "${label}" exists`, false); continue; }
-    const cells = Array.from(row.querySelectorAll("input.cell"));
-    if (cells.length !== TOTAL_YEARS) {
-      check(`"${label}" renders ${TOTAL_YEARS} year cells`, false, `${cells.length}`);
-      continue;
+  check("every revenue line gets its own card", BASE.revenue.every((c) => !!cardFor(c.name)));
+  check("every COGS line gets its own card", BASE.cogs.every((c) => !!cardFor(c.name)));
+
+  // Each component's own drivers, typed into Y3, must land in that year only.
+  for (const kind of ["revenue", "cogs"]) {
+    for (const c of BASE[kind]) {
+      const uses = BASIS_USES[c.basis];
+      const labels = BASIS_FIELD_LABELS[c.basis];
+      const fields = [
+        c.yieldKgPerHour ? ["yieldKgPerHour", "Yield (kg/h)"] : null,
+        uses.quantity ? ["quantity", labels.quantity] : null,
+        uses.unitCost ? ["unitCost", labels.unitCost] : null,
+      ].filter(Boolean);
+      for (const [field, label] of fields) {
+        const card = cardFor(c.name);
+        const row = rowIn(card, label);
+        if (!row) { check(`${kind}[${c.id}] row "${label}" exists`, false); continue; }
+        const cells = Array.from(row.querySelectorAll("input.cell"));
+        if (cells.length !== TOTAL_YEARS) {
+          check(`${kind}[${c.id}].${field} renders ${TOTAL_YEARS} year cells`, false, `${cells.length}`);
+          continue;
+        }
+        fireEvent.change(cells[2], { target: { value: "123" } });
+        const next = t.latest ? t.latest[kind].find((x) => x.id === c.id) : null;
+        check(
+          `${kind}[${c.id}].${field} writes 123 into Y3 only`,
+          !!next &&
+            next[field].length === TOTAL_YEARS &&
+            Math.abs(next[field][2] - 123) < 1e-9 &&
+            Math.abs(next[field][0] - c[field][0]) < 1e-9,
+          `got ${next && next[field]}`
+        );
+      }
     }
-    // Edit Y3 specifically: a yearly driver must write to the year that was typed in.
-    fireEvent.change(cells[2], { target: { value: typed } });
-    const series = t.latest ? get(t.latest) : null;
+  }
+
+  // Renaming and describing a line.
+  {
+    const card = cardFor(BASE.cogs.find((c) => c.id === "water").name);
+    const nameInput = card.querySelector("input.comp-name");
+    fireEvent.change(nameInput, { target: { value: "H2O" } });
+    const renamed = t.latest?.cogs.find((c) => c.id === "water");
+    check("a line can be renamed", renamed?.name === "H2O", `got ${renamed?.name}`);
+    check("renaming keeps the id, so history and links survive", renamed?.id === "water");
+
+    const descInput = card.querySelector(".comp-desc input");
+    check("the description input caps at 150 characters", descInput.getAttribute("maxlength") === "150");
+    fireEvent.change(descInput, { target: { value: "Process water make-up" } });
     check(
-      `"${label}" writes ${expected} into Y3 only`,
-      Array.isArray(series) &&
-        series.length === TOTAL_YEARS &&
-        Math.abs(series[2] - expected) < 1e-9 &&
-        Math.abs(series[0] - get(BASE)[0]) < 1e-9,
-      `got ${series}`
+      "a description is written back",
+      t.latest?.cogs.find((c) => c.id === "water")?.description === "Process water make-up"
     );
+    fireEvent.change(descInput, { target: { value: "x".repeat(400) } });
+    check(
+      "an over-long description is clamped, not rejected",
+      t.latest?.cogs.find((c) => c.id === "water")?.description.length === 150
+    );
+  }
+
+  // Changing the basis must reshape the row set.
+  {
+    const card = cardFor(BASE.cogs.find((c) => c.id === "mts").name);
+    const select = card.querySelector("select");
+    fireEvent.change(select, { target: { value: "fixedAnnual" } });
+    check("the basis can be changed", t.latest?.cogs.find((c) => c.id === "mts")?.basis === "fixedAnnual");
+  }
+
+  // Premium eligibility.
+  {
+    const card = cardFor(BASE.revenue[0].name);
+    const box = card.querySelector(".comp-flag input");
+    check("a revenue line exposes the premium flag", !!box);
+    fireEvent.click(box);
+    check("the premium flag writes back", t.latest?.revenue[0].premiumEligible === false);
+  }
+
+  // Adding and removing lines.
+  {
+    const addButtons = Array.from(t.container.querySelectorAll("button")).filter((b) =>
+      b.textContent.trim().startsWith("+ Add")
+    );
+    check("the tab offers an add button for revenue and for COGS", addButtons.length === 2, `${addButtons.length}`);
+    fireEvent.click(addButtons[1]);
+    const added = t.latest?.cogs;
+    check("adding a COGS line appends one", added?.length === BASE.cogs.length + 1);
+    check("the added line has a full-length yearly series",
+      added?.[added.length - 1].unitCost.length === TOTAL_YEARS);
+    check("the added line has a unique id", new Set(added.map((c) => c.id)).size === added.length);
+    check("the added line calculates without NaN",
+      runModel(t.latest).results.every((r) => Number.isFinite(r.cogs)));
+
+    const card = cardFor(BASE.cogs[0].name);
+    const removeBtn = Array.from(card.querySelectorAll("button")).find((b) => b.textContent.trim() === "Remove");
+    fireEvent.click(removeBtn);
+    check("removing a line drops it", t.latest?.cogs.every((c) => c.id !== BASE.cogs[0].id));
+    check("removing a line still calculates", runModel(t.latest).results.every((r) => Number.isFinite(r.cogs)));
   }
 
   // Editing a driver year must move the model in that year and leave others alone.
   {
-    const row = yearRow("Price per ton MGO (EUR)");
+    const card = cardFor(BASE.revenue[0].name);
+    const row = rowIn(card, BASIS_FIELD_LABELS[BASE.revenue[0].basis].unitCost);
     const cells = Array.from(row.querySelectorAll("input.cell"));
     fireEvent.change(cells[5], { target: { value: "1000" } });
     const after = runModel(t.latest);
@@ -196,8 +259,23 @@ console.log("\n-- Unit economics tab --");
     );
   }
 
-  // utilisation grid, in the second table on the tab
-  const cells = Array.from(volTable.querySelectorAll("input.cell"));
+  // The plant hours row and the utilisation grid sit outside the component cards.
+  {
+    const hoursRow = Array.from(t.container.querySelectorAll("tbody tr")).find(
+      (tr) => tr.cells[0] && tr.cells[0].textContent.trim() === "Annual operating hours at 100%"
+    );
+    const cells = Array.from(hoursRow.querySelectorAll("input.cell"));
+    check(`"Annual operating hours at 100%" renders ${TOTAL_YEARS} year cells`, cells.length === TOTAL_YEARS, `${cells.length}`);
+    fireEvent.change(cells[2], { target: { value: "7500" } });
+    check("plant hours write into Y3 only",
+      Math.abs(t.latest?.unitEconomics.annualHours[2] - 7500) < 1e-9 &&
+        Math.abs(t.latest?.unitEconomics.annualHours[0] - BASE.unitEconomics.annualHours[0]) < 1e-9);
+  }
+
+  const utilRow = Array.from(t.container.querySelectorAll("tbody tr")).find(
+    (tr) => tr.cells[0] && tr.cells[0].textContent.includes("Plant capacity utilisation")
+  );
+  const cells = Array.from(utilRow.querySelectorAll("input.cell"));
   check(`utilisation grid renders ${PERIOD_COUNT} cells`, cells.length === PERIOD_COUNT, `${cells.length}`);
   fireEvent.change(cells[24], { target: { value: "75" } });
   check("utilisation cell writes back as a fraction", Math.abs((t.latest?.unitEconomics.utilisation[24] ?? 0) - 0.75) < 1e-12, `${t.latest?.unitEconomics.utilisation[24]}`);
@@ -213,8 +291,10 @@ console.log("\n-- Unit economics tab --");
   const shortInputs = JSON.parse(JSON.stringify(BASE));
   shortInputs.unitEconomics.utilisation = shortInputs.unitEconomics.utilisation.slice(0, CUT);
   const t = mount(UnitEconTab, { inputs: shortInputs });
-  const volTable = Array.from(t.container.querySelectorAll("table.fin"))[1];
-  const cells = Array.from(volTable.querySelectorAll("input.cell"));
+  const utilRow = Array.from(t.container.querySelectorAll("tbody tr")).find(
+    (tr) => tr.cells[0] && tr.cells[0].textContent.includes("Plant capacity utilisation")
+  );
+  const cells = Array.from(utilRow.querySelectorAll("input.cell"));
   check(`short utilisation series still renders ${PERIOD_COUNT} cells`, cells.length === PERIOD_COUNT, `${cells.length}`);
   fireEvent.change(cells[PERIOD_COUNT - 1], { target: { value: "80" } });
   const written = t.latest?.unitEconomics.utilisation;
@@ -224,19 +304,24 @@ console.log("\n-- Unit economics tab --");
   cleanup();
 }
 {
-  // A legacy scalar driver must render as a full row of year cells, not blow up.
+  // A driver series saved under a shorter horizon must still render a full row
+  // of year cells, and a legacy scalar must not blow the row up.
   const legacy = JSON.parse(JSON.stringify(BASE));
-  legacy.unitEconomics.pricePerTon = 500;
-  const t = mount(UnitEconTab, { inputs: legacy });
-  const row = Array.from(t.container.querySelectorAll("table.fin")[0].querySelectorAll("tbody tr")).find(
-    (tr) => tr.cells[0] && tr.cells[0].textContent.trim() === "Price per ton MGO (EUR)"
+  legacy.revenue = legacy.revenue.map((c) => ({ ...c, unitCost: 500 }));
+  const t = mount(UnitEconTab, { inputs: normaliseScenario(legacy) });
+  const card = Array.from(t.container.querySelectorAll(".card")).find((c) => {
+    const n = c.querySelector("input.comp-name");
+    return n && n.value === BASE.revenue[0].name;
+  });
+  const row = Array.from(card.querySelectorAll("tbody tr")).find(
+    (tr) => tr.cells[0] && tr.cells[0].textContent.trim() === BASIS_FIELD_LABELS[BASE.revenue[0].basis].unitCost
   );
   const cells = Array.from(row.querySelectorAll("input.cell"));
-  check("a legacy scalar driver renders 10 year cells", cells.length === 10, `${cells.length}`);
+  check(`a legacy scalar driver renders ${TOTAL_YEARS} year cells`, cells.length === TOTAL_YEARS, `${cells.length}`);
   check("a legacy scalar shows in every year", cells.every((c) => Number(c.value) === 500));
   fireEvent.change(cells[0], { target: { value: "600" } });
   check("editing a legacy scalar emits a full yearly array",
-    Array.isArray(t.latest?.unitEconomics.pricePerTon) && t.latest.unitEconomics.pricePerTon.length === 10);
+    Array.isArray(t.latest?.revenue[0].unitCost) && t.latest.revenue[0].unitCost.length === TOTAL_YEARS);
   cleanup();
 }
 

@@ -1,5 +1,5 @@
 // XFuel C2 project model — input/output type contracts.
-// Currency: EUR throughout. Horizon: 36 monthly periods (Y1..Y3) + 7 annual (Y4..Y10).
+// Currency: EUR throughout. Horizon: 36 monthly periods (Y1..Y3) + 17 annual (Y4..Y20).
 
 export type CapexConcept = "isbl" | "osbl" | "other" | "land";
 
@@ -23,43 +23,16 @@ export interface CapexLine {
  */
 export type YearlySeries = number[];
 
+/**
+ * Plant-level operating assumptions. The individual revenue and cost lines now
+ * live in the component arrays on ScenarioInputs, not here.
+ */
 export interface UnitEconomics {
-  /** Selling price per ton of MGO, EUR. */
-  pricePerTon: YearlySeries;
-  /** Plant operating hours per year at 100% (e.g. 8000). */
+  /** Plant operating hours per year at 100%. */
   annualHours: YearlySeries;
-  /** Hourly throughput, kg/h. */
-  mgoYieldKgPerHour: YearlySeries;
-  mtsInputKgPerHour: YearlySeries;
-  reactantInputKgPerHour: YearlySeries;
-  residueYieldKgPerHour: YearlySeries;
-  waterYieldKgPerHour: YearlySeries;
-  /** Input/disposal unit costs, EUR per ton. */
-  mtsCostPerTon: YearlySeries;
-  reactantCostPerTon: YearlySeries;
-  residueCostPerTon: YearlySeries;
-  waterCostPerTon: YearlySeries;
-  /** Energy. */
-  electricityPricePerKwh: YearlySeries;
-  electricityKwhPerHour: YearlySeries;
-  heatPricePerKwh: YearlySeries;
-  heatKwhPerHour: YearlySeries;
-  /** Maintenance as % per annum of cumulative deployed CAPEX. */
-  maintenancePctOfCapex: YearlySeries;
   /** Capacity utilisation as a fraction of maximum, per PERIOD (not per year). */
   utilisation: number[];
 }
-
-/** Every UnitEconomics field that is a yearly series. */
-export const YEARLY_UE_KEYS = [
-  "pricePerTon", "annualHours", "mgoYieldKgPerHour", "mtsInputKgPerHour",
-  "reactantInputKgPerHour", "residueYieldKgPerHour", "waterYieldKgPerHour",
-  "mtsCostPerTon", "reactantCostPerTon", "residueCostPerTon", "waterCostPerTon",
-  "electricityPricePerKwh", "electricityKwhPerHour", "heatPricePerKwh",
-  "heatKwhPerHour", "maintenancePctOfCapex",
-] as const;
-
-export type YearlyUeKey = (typeof YEARLY_UE_KEYS)[number];
 
 export interface PersonnelArchetype {
   id: string;
@@ -124,6 +97,15 @@ export interface GlobalParameters {
   opexInflation: number;
   /** Annual escalation applied to personnel cost per FTE. Year 1 is the base. */
   compensationInflation: number;
+  /** Annual escalation applied to revenue unit economics. Year 1 is the base. */
+  revenueInflation: number;
+  /** Annual escalation applied to COGS unit economics. Year 1 is the base. */
+  cogsInflation: number;
+  /**
+   * Sustainable premium multiplier on eligible revenue. 1.0 means no premium;
+   * 1.7 means the price realised is 1.7x the base price, so 0.7x is premium.
+   */
+  sustainablePremium: number;
 }
 
 export interface ScenarioInputs {
@@ -133,12 +115,17 @@ export interface ScenarioInputs {
   group?: import("./group").GroupInputs;
   capex: CapexLine[];
   unitEconomics: UnitEconomics;
+  /** Editable revenue streams. The first is the primary product. */
+  revenue: import("./components").RevenueComponent[];
+  /** Editable cost of goods lines. */
+  cogs: import("./components").ModelComponent[];
   personnel: PersonnelArchetype[];
-  opex: OpexCategory[];
+  /** Editable operating cost lines. */
+  opex: import("./components").ModelComponent[];
   instruments: Instrument[];
 }
 
-/** A period in the grid: 36 monthly then 7 annual. */
+/** A period in the grid: 36 monthly then 17 annual. */
 export interface Period {
   index: number;
   label: string;
@@ -160,16 +147,24 @@ export interface PeriodResult {
   nameplateTonsPerYear: number;
   // P&L
   revenue: number;
-  cogsEnergy: number;
-  cogsMts: number;
-  cogsReactants: number;
-  cogsResidue: number;
-  cogsWater: number;
-  cogsMaintenance: number;
+  /** Revenue at the base price, before the sustainable premium. */
+  revenueBase: number;
+  /** The uplift attributable to the sustainable premium. */
+  revenuePremium: number;
+  /** Revenue by component id. */
+  revenueByComponent: Record<string, number>;
   cogs: number;
+  /** COGS by component id. */
+  cogsByComponent: Record<string, number>;
   grossMargin: number;
+  /** Gross margin attributable to base-price revenue. */
+  grossMarginBase: number;
+  /** Gross margin attributable to the premium. Equals revenuePremium. */
+  grossMarginPremium: number;
   opexPersonnel: number;
   opexOther: number;
+  /** Other OPEX by component id. */
+  opexByComponent: Record<string, number>;
   opexTotal: number;
   ebitda: number;
   depreciation: number;

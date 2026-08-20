@@ -1,5 +1,7 @@
 import { buildPeriods, daysInPeriod, fit, PERIOD_COUNT, MONTHLY_PERIODS } from "./periods";
 import { extendSeries, extendYearly } from "./normalise";
+import { BASIS_USES } from "./components";
+import type { ModelComponent } from "./components";
 import { buildDebtFlows, irr, npv } from "./finance";
 import type {
   AnnualSummaryRow,
@@ -13,8 +15,10 @@ import type {
 function emptyResult(): PeriodResult {
   return {
     tons: 0, utilisation: 0, nameplateTonsPerYear: 0,
-    revenue: 0, cogsEnergy: 0, cogsMts: 0, cogsReactants: 0, cogsResidue: 0, cogsWater: 0,
-    cogsMaintenance: 0, cogs: 0, grossMargin: 0,
+    revenueBase: 0, revenuePremium: 0, revenueByComponent: {},
+    cogsByComponent: {}, grossMarginBase: 0, grossMarginPremium: 0,
+    opexByComponent: {},
+    revenue: 0, cogs: 0, grossMargin: 0,
     opexPersonnel: 0, opexOther: 0, opexTotal: 0, ebitda: 0,
     depreciation: 0, ebit: 0, interestExpense: 0, grantIncome: 0, pbt: 0, tax: 0, netIncome: 0,
     deltaAr: 0, deltaAp: 0, otherWc: 0, cfo: 0,
@@ -100,33 +104,64 @@ export function runModel(inputs: ScenarioInputs): ModelOutputs {
     }
   }
 
-  // ---------- 3. Revenue and COGS from unit economics ----------
+  // ---------- 3. Revenue and COGS from the component lists ----------
   const ue = inputs.unitEconomics;
   // Carry the last supplied value forward rather than zero-padding: a series
   // that stops short means "no further input", not "the plant shuts down".
   const utilisation = extendSeries(ue.utilisation, periods, "rate");
-
-  // Every unit-economics driver varies by plan year, so resolve each one to the
-  // year the period falls in. `yr(i)` is the 0-based plan year of period i.
-  const Y = {
-    price: extendYearly(ue.pricePerTon),
-    hours: extendYearly(ue.annualHours),
-    mgo: extendYearly(ue.mgoYieldKgPerHour),
-    mts: extendYearly(ue.mtsInputKgPerHour),
-    react: extendYearly(ue.reactantInputKgPerHour),
-    residue: extendYearly(ue.residueYieldKgPerHour),
-    water: extendYearly(ue.waterYieldKgPerHour),
-    mtsCost: extendYearly(ue.mtsCostPerTon),
-    reactCost: extendYearly(ue.reactantCostPerTon),
-    residueCost: extendYearly(ue.residueCostPerTon),
-    waterCost: extendYearly(ue.waterCostPerTon),
-    elecPrice: extendYearly(ue.electricityPricePerKwh),
-    elecKwh: extendYearly(ue.electricityKwhPerHour),
-    heatPrice: extendYearly(ue.heatPricePerKwh),
-    heatKwh: extendYearly(ue.heatKwhPerHour),
-    maint: extendYearly(ue.maintenancePctOfCapex),
-  };
+  const hoursByYear = extendYearly(ue.annualHours);
   const yr = (i: number) => Math.max(0, periods[i].year - 1);
+
+  // Escalation compounds from year 1, which is the base year.
+  const escalate = (rate: number, i: number) => Math.pow(1 + rate, Math.max(0, periods[i].year - 1));
+  const revInf = Number(p.revenueInflation) || 0;
+  const cogsInf = Number(p.cogsInflation) || 0;
+  const premium = Number.isFinite(Number(p.sustainablePremium)) ? Number(p.sustainablePremium) : 1;
+
+  // Yearly series are resolved once per component rather than per period.
+  const prep = (c: ModelComponent) => ({
+    c,
+    quantity: extendYearly(c.quantity),
+    unitCost: extendYearly(c.unitCost),
+    yieldKgPerHour: extendYearly(c.yieldKgPerHour),
+  });
+  const revenueLines = (inputs.revenue ?? []).map(prep);
+  const cogsLines = (inputs.cogs ?? []).map(prep);
+
+  /**
+   * Value one component for one period.
+   *
+   * `hours` is operating hours in the period, `tons` the product sold, and
+   * `capexCum` the deployed CAPEX, so a single signature serves every basis.
+   */
+  const evaluate = (
+    line: ReturnType<typeof prep>,
+    y: number,
+    months: number,
+    hours: number,
+    tons: number,
+    capexCum: number,
+    util: number
+  ): number => {
+    const q = line.quantity[y] ?? 0;
+    const u = line.unitCost[y] ?? 0;
+    switch (line.c.basis) {
+      case "perHour":
+        // Quantity in kg/h against a cost per ton, hence the divide by 1,000.
+        return (hours * q * u) / 1000;
+      case "perKwh":
+        return hours * q * u;
+      case "perTon":
+        return tons * u;
+      case "pctOfCapex":
+        // Scaled by utilisation so a plant standing idle does not accrue it.
+        return (q * capexCum * months * util) / 12;
+      case "fixedAnnual":
+        return (u * months) / 12;
+      default:
+        return 0;
+    }
+  };
 
   for (let i = 0; i < n; i++) {
     const r = results[i];
@@ -135,35 +170,52 @@ export function runModel(inputs: ScenarioInputs): ModelOutputs {
     const y = yr(i);
     r.utilisation = u;
 
-    // Nameplate is a function of the year's yield and operating hours, so it can
-    // step up with a debottlenecking or down with a shorter campaign.
-    r.nameplateTonsPerYear = (Y.mgo[y] * Y.hours[y]) / 1000;
-
-    // Tons of MGO produced and sold in the period.
+    // The first revenue line is the primary product; its yield sets nameplate.
+    const primary = revenueLines[0];
+    const primaryYield = primary ? primary.yieldKgPerHour[y] ?? 0 : 0;
+    r.nameplateTonsPerYear = (primaryYield * (hoursByYear[y] ?? 0)) / 1000;
     r.tons = (r.nameplateTonsPerYear / 12) * months * u;
-    r.revenue = r.tons * Y.price[y];
 
-    const hours = (Y.hours[y] / 12) * months * u;
+    const hours = ((hoursByYear[y] ?? 0) / 12) * months * u;
+    const revEsc = escalate(revInf, i);
+    const cogsEsc = escalate(cogsInf, i);
 
-    r.cogsEnergy = hours * (Y.elecPrice[y] * Y.elecKwh[y] + Y.heatPrice[y] * Y.heatKwh[y]);
-    r.cogsMts = (hours * Y.mts[y] * Y.mtsCost[y]) / 1000;
-    r.cogsReactants = (hours * Y.react[y] * Y.reactCost[y]) / 1000;
-    r.cogsResidue = (hours * Y.residue[y] * Y.residueCost[y]) / 1000;
-    r.cogsWater = (hours * Y.water[y] * Y.waterCost[y]) / 1000;
-    // Maintenance: % p.a. of cumulative deployed CAPEX, scaled by utilisation.
-    r.cogsMaintenance = (Y.maint[y] * r.capexCumulative * months * u) / 12;
+    // Revenue. Each stream sells its own tonnage, driven by its own yield.
+    let base = 0;
+    let prem = 0;
+    for (const line of revenueLines) {
+      const streamTons =
+        ((line.yieldKgPerHour[y] ?? 0) * (hoursByYear[y] ?? 0)) / 1000 / 12 * months * u;
+      const gross = evaluate(line, y, months, hours, streamTons, r.capexCumulative, u) * revEsc;
+      // The premium multiplies the base price, so the uplift is (premium - 1).
+      const uplift = line.c.premiumEligible ? gross * (premium - 1) : 0;
+      base += gross;
+      prem += uplift;
+      r.revenueByComponent[line.c.id] = gross + uplift;
+    }
+    r.revenueBase = base;
+    r.revenuePremium = prem;
+    r.revenue = base + prem;
 
-    r.cogs =
-      r.cogsEnergy + r.cogsMts + r.cogsReactants + r.cogsResidue + r.cogsWater + r.cogsMaintenance;
+    // COGS. Quantities are physical and do not inflate; unit costs do, which is
+    // why the escalation multiplies the whole component rather than a quantity.
+    let cogsTotal = 0;
+    for (const line of cogsLines) {
+      const amount = evaluate(line, y, months, hours, r.tons, r.capexCumulative, u) * cogsEsc;
+      r.cogsByComponent[line.c.id] = amount;
+      cogsTotal += amount;
+    }
+    r.cogs = cogsTotal;
+
     r.grossMargin = r.revenue - r.cogs;
+    // The premium carries no incremental cost, so all of it falls to margin.
+    r.grossMarginPremium = r.revenuePremium;
+    r.grossMarginBase = r.grossMargin - r.revenuePremium;
   }
 
-  // ---------- 4. OPEX: personnel and other categories ----------
-  // Escalation compounds from year 1, which is the base: a cost quoted in Y1
-  // money is unchanged in Y1 and grows at the rate thereafter.
+  // ---------- 4. OPEX: personnel and the component list ----------
   const opexInf = Number(p.opexInflation) || 0;
   const compInf = Number(p.compensationInflation) || 0;
-  const escalate = (rate: number, i: number) => Math.pow(1 + rate, Math.max(0, periods[i].year - 1));
 
   for (const arch of inputs.personnel) {
     const ftes = extendSeries(arch.ftes, periods, "rate");
@@ -172,18 +224,21 @@ export function runModel(inputs: ScenarioInputs): ModelOutputs {
       results[i].opexPersonnel += (cost * ftes[i] * periods[i].months) / 12;
     }
   }
-  for (const cat of inputs.opex) {
-    // Amounts are rescaled by period length, so a monthly run rate carried into
-    // an annual period becomes the annual figure.
-    const amounts = extendSeries(cat.amounts, periods, "amount");
-    for (let i = 0; i < n; i++) {
-      // The CAPEX-linked component is not escalated: it already moves with the
+
+  const opexLines = (inputs.opex ?? []).map(prep);
+  for (let i = 0; i < n; i++) {
+    const r = results[i];
+    const months = periods[i].months;
+    const y = yr(i);
+    const hours = ((hoursByYear[y] ?? 0) / 12) * months * (r.utilisation || 0);
+    const esc = escalate(opexInf, i);
+    for (const line of opexLines) {
+      // The CAPEX-linked basis is not escalated: it already moves with the
       // deployed asset base, so inflating it too would double count.
-      let v = amounts[i] * escalate(opexInf, i);
-      if (cat.pctOfCapexPerAnnum) {
-        v += (cat.pctOfCapexPerAnnum * results[i].capexCumulative * periods[i].months) / 12;
-      }
-      results[i].opexOther += v;
+      const raw = evaluate(line, y, months, hours, r.tons, r.capexCumulative, r.utilisation || 0);
+      const amount = line.c.basis === "pctOfCapex" ? raw : raw * esc;
+      r.opexByComponent[line.c.id] = amount;
+      r.opexOther += amount;
     }
   }
   for (let i = 0; i < n; i++) {
@@ -359,8 +414,9 @@ function computeValuation(
 function buildYtd(results: PeriodResult[], periods: Period[]): PeriodResult[] {
   const out: PeriodResult[] = [];
   const flowKeys: (keyof PeriodResult)[] = [
-    "tons", "revenue", "cogsEnergy", "cogsMts", "cogsReactants", "cogsResidue", "cogsWater",
-    "cogsMaintenance", "cogs", "grossMargin", "opexPersonnel", "opexOther", "opexTotal", "ebitda",
+    "tons", "revenue", "revenueBase", "revenuePremium",
+    "cogs", "grossMargin", "grossMarginBase", "grossMarginPremium",
+    "opexPersonnel", "opexOther", "opexTotal", "ebitda",
     "depreciation", "ebit", "interestExpense", "grantIncome", "pbt", "tax", "netIncome",
     "deltaAr", "deltaAp", "otherWc", "cfo", "capexSpend", "cfi", "debtDraw", "debtRepayment",
     "equityRaise", "grantCash", "cff", "netCashFlow", "projectFcf", "equityFcf",
