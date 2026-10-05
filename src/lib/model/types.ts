@@ -23,6 +23,9 @@ export interface CapexLine {
  */
 export type YearlySeries = number[];
 
+/** How the sustainable premium is expressed. See GlobalParameters. */
+export type PremiumMode = "multiplier" | "perTon";
+
 /**
  * Plant-level operating assumptions. The individual revenue and cost lines now
  * live in the component arrays on ScenarioInputs, not here.
@@ -104,8 +107,32 @@ export interface GlobalParameters {
   /**
    * Sustainable premium multiplier on eligible revenue. 1.0 means no premium;
    * 1.7 means the price realised is 1.7x the base price, so 0.7x is premium.
+   *
+   * Retained as the legacy single-figure input. It seeds
+   * `premiumMultiplierByYear` for scenarios saved before the premium became a
+   * yearly series, and is kept in step with year 1 thereafter so the Excel
+   * round trip and older readers still see a sensible scalar.
    */
   sustainablePremium: number;
+  /**
+   * How the premium is expressed.
+   *
+   *   multiplier — a ratio on the base price, as the model has always worked.
+   *   perTon     — a fixed EUR uplift per ton of premium-eligible product.
+   *
+   * Absent on scenarios saved before this existed, which normalise to
+   * "multiplier".
+   */
+  premiumMode?: PremiumMode;
+  /** Premium multiplier by plan year. 1.0 means no premium. */
+  premiumMultiplierByYear?: YearlySeries;
+  /**
+   * Premium in EUR per ton of premium-eligible product, by plan year.
+   *
+   * Not escalated by revenue inflation: a figure entered per year already
+   * carries the user's own view of how the premium moves.
+   */
+  premiumPerTonByYear?: YearlySeries;
 }
 
 export interface ScenarioInputs {
@@ -213,7 +240,13 @@ export interface ValuationResult {
 export interface AnnualSummaryRow {
   year: number;
   label: string;
+  /** Product sold in the year. Drives the per-ton figures on the yearly chart. */
+  tons: number;
   revenue: number;
+  /** Revenue before the sustainable premium. */
+  revenueBase: number;
+  /** The sustainable premium alone. Carries no incremental cost. */
+  revenuePremium: number;
   cogs: number;
   grossMargin: number;
   opexTotal: number;

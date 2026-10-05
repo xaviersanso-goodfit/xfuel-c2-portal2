@@ -71,6 +71,15 @@ export function normaliseScenario(inputs: ScenarioInputs): ScenarioInputs {
     parameters: {
       ...inputs.parameters,
       otherWorkingCapital: extendSeries(inputs.parameters?.otherWorkingCapital, periods, "none"),
+      // Premium. A scenario saved before the premium became yearly has only the
+      // scalar, so it seeds the multiplier series; extendYearly turns a bare
+      // number into a flat series for exactly this case. Both series are always
+      // materialised so switching mode in the UI never shows an empty grid.
+      premiumMode: inputs.parameters?.premiumMode === "perTon" ? "perTon" : "multiplier",
+      premiumMultiplierByYear: extendYearly(
+        inputs.parameters?.premiumMultiplierByYear ?? inputs.parameters?.sustainablePremium ?? 1
+      ),
+      premiumPerTonByYear: extendYearly(inputs.parameters?.premiumPerTonByYear ?? 0),
     },
     capex: (inputs.capex ?? []).map((line) => ({
       ...line,

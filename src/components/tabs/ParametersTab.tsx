@@ -1,6 +1,8 @@
 "use client";
 
 import { Field } from "../Grid";
+import PremiumEditor from "../PremiumEditor";
+import YearlyUnitEconomics from "../charts/YearlyUnitEconomics";
 import ChartFrame from "../charts/ChartFrame";
 import CoverChart from "../charts/CoverChart";
 import ProjectSummary from "../charts/ProjectSummary";
@@ -50,6 +52,15 @@ export default function ParametersTab({
         filename="c2-project-summary"
       >
         <ProjectSummary inputs={inputs} model={model} />
+      </ChartFrame>
+
+      <ChartFrame
+        wide
+        title="Unit economics by year"
+        subtitle="Revenue split between base and sustainable premium, against COGS and gross margin, for each plan year."
+        filename="c2-unit-economics-yearly"
+      >
+        <YearlyUnitEconomics model={model} />
       </ChartFrame>
 
       <ChartFrame
@@ -106,11 +117,6 @@ export default function ParametersTab({
         <div className="card">
           <h3>Revenue</h3>
           <Field
-            label="Sustainable premium (multiplier)" value={p.sustainablePremium} step="0.01" editable={editable}
-            onChange={(x) => setP({ sustainablePremium: Number(x) || 0 })}
-            hint="1.00 means no premium. 1.70 means the realised price is 1.70x the base price, so 0.70x is the green premium. Applies only to revenue lines flagged premium eligible."
-          />
-          <Field
             label="Revenue inflation (% p.a.)" value={p.revenueInflation} scale={100} step="0.1" editable={editable}
             onChange={(x) => setP({ revenueInflation: (Number(x) || 0) / 100 })}
             hint="Escalates every revenue unit economic, for example price per ton. Compounds from year 1, which is the base."
@@ -158,6 +164,9 @@ export default function ParametersTab({
           />
         </div>
       </div>
+
+      {/* ---------- premium ---------- */}
+      <PremiumEditor parameters={p} editable={editable} onChange={setP} />
 
       {/* ---------- annual summary ---------- */}
       <div className="card">

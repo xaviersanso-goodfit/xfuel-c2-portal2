@@ -181,7 +181,15 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
     ["Compensation inflation (p.a.)", "comp_infl", p.compensationInflation, PCT],
     ["Revenue inflation (p.a.)", "rev_infl", p.revenueInflation, PCT],
     ["COGS inflation (p.a.)", "cogs_infl", p.cogsInflation, PCT],
-    ["Sustainable premium (multiplier)", "premium", p.sustainablePremium, '0.00"x"'],
+    // Year 1 of the multiplier series, kept so an older reader and the import
+    // fallback still find a single sensible figure.
+    ["Sustainable premium (multiplier)", "premium", extendYearly(
+      p.premiumMultiplierByYear ?? p.sustainablePremium ?? 1)[0], '0.00"x"'],
+    // 1 selects the per-ton series, 0 the multiplier series. A flag rather than
+    // a baked-in formula so the workbook stays live: flip this cell in Excel
+    // and the P&L recalculates without a re-export.
+    ["Premium mode (1 = EUR per ton, 0 = multiplier)", "premium_mode",
+      p.premiumMode === "perTon" ? 1 : 0, "0"],
   ];
   for (const [label, key, value, fmt] of scalars) {
     const r = wsP.addRow([label, value]);
@@ -294,6 +302,12 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
 
   const yearly: [string, string, number[], string?][] = [
     ["Annual operating hours at 100%", "hours_year", extendYearly(ue.annualHours)],
+    // Both premium series are written whichever mode is active, so switching
+    // the mode flag in the workbook has something to point at.
+    ["Sustainable premium — multiplier", "premium_mult_y",
+      extendYearly(p.premiumMultiplierByYear ?? p.sustainablePremium ?? 1), '0.00"x"'],
+    ["Sustainable premium — EUR per ton", "premium_perton_y",
+      extendYearly(p.premiumPerTonByYear ?? 0), NUM],
   ];
   for (const c of inputs.revenue) {
     yearly.push([`${c.name} — yield (kg/h)`, `rev_${c.id}_y`, extendYearly(c.yieldKgPerHour ?? [])]);
@@ -676,8 +690,18 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
     revBaseRows.push(baseRow.number);
     const premRow = formulaRow(
       wsPL, `Revenue — ${c.name} (sustainable premium)`, n,
-      // The premium multiplies the base price, so the uplift is (premium - 1).
-      (i) => (c.premiumEligible ? `${col(i)}${baseRow.number}*(${B.scalar("premium")}-1)` : "0")
+      // Two shapes, selected by the mode flag so the workbook stays live.
+      //   per ton    this stream's own tonnage times the EUR uplift. Not
+      //              multiplied by rev_factor: an entered per-year figure is
+      //              final and is not escalated by revenue inflation.
+      //   multiplier a ratio on the base price, hence (premium - 1), riding on
+      //              the already-escalated base row.
+      (i) =>
+        c.premiumEligible
+          ? `IF(${B.scalar("premium_mode")}=1,` +
+            `(${streamTons(c, i)})*${B.at("premium_perton_y", i)},` +
+            `${col(i)}${baseRow.number}*(${B.at("premium_mult_y", i)}-1))`
+          : "0"
     );
     revPremRows.push(premRow.number);
   }

@@ -116,7 +116,15 @@ export function runModel(inputs: ScenarioInputs): ModelOutputs {
   const escalate = (rate: number, i: number) => Math.pow(1 + rate, Math.max(0, periods[i].year - 1));
   const revInf = Number(p.revenueInflation) || 0;
   const cogsInf = Number(p.cogsInflation) || 0;
-  const premium = Number.isFinite(Number(p.sustainablePremium)) ? Number(p.sustainablePremium) : 1;
+  // Premium. Two modes, both held as yearly series so a year-by-year view is
+  // possible; the legacy scalar seeds the multiplier series for scenarios saved
+  // before this existed.
+  const premiumMode = p.premiumMode === "perTon" ? "perTon" : "multiplier";
+  const premiumMult = extendYearly(
+    p.premiumMultiplierByYear ??
+      (Number.isFinite(Number(p.sustainablePremium)) ? Number(p.sustainablePremium) : 1)
+  );
+  const premiumPerTon = extendYearly(p.premiumPerTonByYear ?? 0);
 
   // Yearly series are resolved once per component rather than per period.
   const prep = (c: ModelComponent) => ({
@@ -187,8 +195,17 @@ export function runModel(inputs: ScenarioInputs): ModelOutputs {
       const streamTons =
         ((line.yieldKgPerHour[y] ?? 0) * (hoursByYear[y] ?? 0)) / 1000 / 12 * months * u;
       const gross = evaluate(line, y, months, hours, streamTons, r.capexCumulative, u) * revEsc;
-      // The premium multiplies the base price, so the uplift is (premium - 1).
-      const uplift = line.c.premiumEligible ? gross * (premium - 1) : 0;
+      // Multiplier mode: the premium is a ratio on the base price, so the uplift
+      // is (premium - 1) and it rides on the already-escalated base, because a
+      // ratio is not a currency amount.
+      // Per-ton mode: a EUR uplift on this stream's own tonnage, deliberately
+      // NOT escalated, since a figure entered for each year already carries the
+      // user's view of how the premium moves.
+      const uplift = !line.c.premiumEligible
+        ? 0
+        : premiumMode === "perTon"
+          ? streamTons * (premiumPerTon[y] ?? 0)
+          : gross * ((premiumMult[y] ?? 1) - 1);
       base += gross;
       prem += uplift;
       r.revenueByComponent[line.c.id] = gross + uplift;
@@ -456,13 +473,17 @@ function buildAnnual(periods: Period[], results: PeriodResult[]): AnnualSummaryR
     if (!row) {
       row = {
         year: y, label: `Y${y}`,
+        tons: 0, revenueBase: 0, revenuePremium: 0,
         revenue: 0, cogs: 0, grossMargin: 0, opexTotal: 0, ebitda: 0, depreciation: 0, ebit: 0,
         interestExpense: 0, grantIncome: 0, pbt: 0, tax: 0, netIncome: 0,
         cfo: 0, cfi: 0, cff: 0, netCashFlow: 0, closingCash: 0,
       };
       byYear.set(y, row);
     }
+    row.tons += r.tons;
     row.revenue += r.revenue;
+    row.revenueBase += r.revenueBase;
+    row.revenuePremium += r.revenuePremium;
     row.cogs += r.cogs;
     row.grossMargin += r.grossMargin;
     row.opexTotal += r.opexTotal;

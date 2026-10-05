@@ -142,6 +142,9 @@ const PARAM_LABELS: Record<string, string> = {
   revenueInflation: "Revenue inflation",
   cogsInflation: "COGS inflation",
   sustainablePremium: "Sustainable premium",
+  premiumMode: "Premium mode",
+  premiumMultiplierByYear: "Premium multiplier by year",
+  premiumPerTonByYear: "Premium EUR per ton by year",
 };
 
 /** Every field-level difference between two scenarios. */

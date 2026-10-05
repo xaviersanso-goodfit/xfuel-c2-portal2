@@ -114,6 +114,11 @@ export async function parseWorkbook(data: ArrayBuffer): Promise<{ inputs: Scenar
       revenueInflation: scalar(wsP, "Revenue inflation (p.a.)", base.parameters.revenueInflation),
       cogsInflation: scalar(wsP, "COGS inflation (p.a.)", base.parameters.cogsInflation),
       sustainablePremium: scalar(wsP, "Sustainable premium (multiplier)", base.parameters.sustainablePremium),
+      premiumMode:
+        scalar(wsP, "Premium mode (1 = EUR per ton, 0 = multiplier)",
+          base.parameters.premiumMode === "perTon" ? 1 : 0) === 1
+          ? "perTon"
+          : "multiplier",
       otherWorkingCapital: series(findRow(sheet("Cashflow"), "Other working capital")),
     },
   };
@@ -132,6 +137,17 @@ export async function parseWorkbook(data: ArrayBuffer): Promise<{ inputs: Scenar
   // A line renamed in Excel therefore falls back to the value already in the
   // scenario rather than importing as zero, and the import notes say so.
   const wsU = sheet("UnitEcon");
+  // Premium series. A workbook exported before the premium became yearly has
+  // neither row, so each falls back to the scenario it was built from, which in
+  // turn falls back to the legacy scalar.
+  inputs.parameters.premiumMultiplierByYear = yearly(
+    wsU, "Sustainable premium — multiplier",
+    base.parameters.premiumMultiplierByYear ?? [inputs.parameters.sustainablePremium]
+  );
+  inputs.parameters.premiumPerTonByYear = yearly(
+    wsU, "Sustainable premium — EUR per ton",
+    base.parameters.premiumPerTonByYear ?? [0]
+  );
   const ue = base.unitEconomics;
   inputs.unitEconomics = {
     ...ue,

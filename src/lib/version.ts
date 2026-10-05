@@ -7,7 +7,7 @@
  *
  * Bump this whenever a build is handed over.
  */
-export const BUILD = "2026-08-20-v2";
+export const BUILD = "2026-10-05-v2.1";
 
 /** What landed in this build. Shown on hover of the version chip. */
 export const BUILD_NOTES = [
@@ -19,4 +19,6 @@ export const BUILD_NOTES = [
   "Horizon extended to 20 years",
   "Insurance is a fixed amount, not a % of CAPEX",
   "Changelog: who changed what, when",
+  "v2.1: sustainable premium is per year, as a multiplier or EUR per ton",
+  "v2.1: unit economics by year, base against premium",
 ].join(" · ");

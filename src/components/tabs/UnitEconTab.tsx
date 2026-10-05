@@ -40,7 +40,14 @@ export default function UnitEconTab({
         <div className="kpi">
           <div className="k-label">Realised price per ton</div>
           <div className="k-val">{fmt(last.tons > 0 ? last.revenue / last.tons : 0)}</div>
-          <div className="k-meta">including the {Number(p.sustainablePremium ?? 1).toFixed(2)}x premium</div>
+          <div className="k-meta">
+            {/* Derived from the result rather than the input, so it reads correctly
+                in either premium mode and in any year. */}
+            {last.revenueBase > 0 && last.revenuePremium !== 0
+              ? `including a ${(last.revenue / last.revenueBase).toFixed(2)}x premium` +
+                (last.tons > 0 ? `, ${fmt(last.revenuePremium / last.tons)} per ton` : "")
+              : "no premium in this year"}
+          </div>
         </div>
         <div className="kpi">
           <div className="k-label">Gross margin per ton</div>
