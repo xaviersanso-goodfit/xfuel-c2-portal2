@@ -26,7 +26,7 @@ function emptyResult(): PeriodResult {
     debtDraw: 0, debtRepayment: 0, equityRaise: 0, grantCash: 0, cff: 0,
     netCashFlow: 0, openingCash: 0, closingCash: 0,
     capexCumulative: 0, debtBalance: 0, nolBalance: 0, ar: 0, ap: 0,
-    projectFcf: 0, equityFcf: 0,
+    projectFcf: 0, projectFcfInclGrants: 0, equityFcf: 0,
   };
 }
 
@@ -353,11 +353,28 @@ export function runModel(inputs: ScenarioInputs): ModelOutputs {
   }
 
   // ---------- 8. Valuation flows ----------
-  // Project (unlevered): EBITDA + grant income - unlevered cash tax - capex - working capital.
+  // Project (unlevered): EBITDA - unlevered cash tax - capex - working capital.
+  //
+  // Independent of every source of funding. Debt is excluded by taking EBIT
+  // rather than PBT, so there is no interest shield. Equity is excluded because
+  // injections are not operating flows. Grants are excluded for the same
+  // reason: a subsidy is funding, not something the asset earned, and leaving
+  // it in meant that raising a grant raised the "unlevered" return.
+  //
+  // The exclusion carries through to tax. A fully unlevered view has to tax the
+  // asset as if none of that funding existed, otherwise the return still moves
+  // with the grant, through the tax line instead of the revenue line.
+  //
+  // Grants remain in the equity free cash flow below, which is where a
+  // shareholder actually sees them, and in the P&L, where they are income.
   let nolU = 0;
+  let nolG = 0;
   for (let i = 0; i < n; i++) {
     const r = results[i];
-    const pbtU = r.ebit + r.grantIncome; // no interest
+    const wc = r.deltaAr + r.deltaAp + r.otherWc;
+
+    // Unlevered, before grants. The headline project return.
+    const pbtU = r.ebit; // no interest, no grants
     let taxU = 0;
     if (pbtU <= 0) {
       nolU += -pbtU;
@@ -366,8 +383,22 @@ export function runModel(inputs: ScenarioInputs): ModelOutputs {
       nolU -= offset;
       taxU = (pbtU - offset) * (Number(p.citr) || 0);
     }
-    const wc = r.deltaAr + r.deltaAp + r.otherWc;
-    r.projectFcf = r.ebitda + r.grantIncome - taxU - r.capexSpend + wc;
+    r.projectFcf = r.ebitda - taxU - r.capexSpend + wc;
+
+    // The same flows with grants added back, on the basis the project return
+    // was quoted on before. Its own loss pool, because a different taxable
+    // profit carries a different carry-forward.
+    const pbtG = r.ebit + r.grantIncome;
+    let taxG = 0;
+    if (pbtG <= 0) {
+      nolG += -pbtG;
+    } else {
+      const offsetG = Math.min(nolG, pbtG);
+      nolG -= offsetG;
+      taxG = (pbtG - offsetG) * (Number(p.citr) || 0);
+    }
+    r.projectFcfInclGrants = r.ebitda + r.grantIncome - taxG - r.capexSpend + wc;
+
     // Equity (levered): cash available to / required from equity, excluding equity injections.
     r.equityFcf = r.cfo + r.cfi + r.debtDraw - r.debtRepayment + r.grantCash;
   }
@@ -409,10 +440,13 @@ function computeValuation(
 
   const years = periods.map((x) => x.yearsAtEnd);
   const projectFlows = results.map((r) => r.projectFcf);
+  const projectGrantFlows = results.map((r) => r.projectFcfInclGrants);
   const equityFlows = results.map((r) => r.equityFcf);
 
   const projectWithTv = projectFlows.slice();
   projectWithTv[last] += terminalValueEnterprise;
+  const projectGrantWithTv = projectGrantFlows.slice();
+  projectGrantWithTv[last] += terminalValueEnterprise;
   const equityWithTv = equityFlows.slice();
   equityWithTv[last] += terminalValueEquity;
 
@@ -422,6 +456,8 @@ function computeValuation(
     netDebtAtExit,
     projectIrr: irr(projectWithTv, years),
     projectNpv: npv(Number(p.wacc) || 0, projectWithTv, years),
+    projectIrrInclGrants: irr(projectGrantWithTv, years),
+    projectNpvInclGrants: npv(Number(p.wacc) || 0, projectGrantWithTv, years),
     equityIrr: irr(equityWithTv, years),
     equityNpv: npv(Number(p.costOfEquity) || 0, equityWithTv, years),
   };
@@ -436,7 +472,7 @@ function buildYtd(results: PeriodResult[], periods: Period[]): PeriodResult[] {
     "opexPersonnel", "opexOther", "opexTotal", "ebitda",
     "depreciation", "ebit", "interestExpense", "grantIncome", "pbt", "tax", "netIncome",
     "deltaAr", "deltaAp", "otherWc", "cfo", "capexSpend", "cfi", "debtDraw", "debtRepayment",
-    "equityRaise", "grantCash", "cff", "netCashFlow", "projectFcf", "equityFcf",
+    "equityRaise", "grantCash", "cff", "netCashFlow", "projectFcf", "projectFcfInclGrants", "equityFcf",
   ];
 
   let acc = emptyResult();

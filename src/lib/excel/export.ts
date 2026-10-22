@@ -856,8 +856,10 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
   // Project FCF is taxed on an unlevered basis: no interest shield, and its own
   // loss carry-forward pool, so it must not reuse the levered tax line.
   wsCF.addRow([]);
-  const pbtU = formulaRow(wsCF, "Unlevered PBT (EBIT + grants)", n, (i) =>
-    `${B.at("ebit_pl", i)}+${B.at("grant_income", i)}`
+  // EBIT alone. No interest, so no debt; no grant income, so no subsidy. The
+  // project return has to be independent of how the asset is funded.
+  const pbtU = formulaRow(wsCF, "Unlevered PBT (EBIT)", n, (i) =>
+    `${B.at("ebit_pl", i)}`
   );
   const nolU = wsCF.addRow(["Unlevered loss carry-forward pool"]);
   const taxU = wsCF.addRow(["Unlevered tax"]);
@@ -873,12 +875,36 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
   }
 
   const projFcf = formulaRow(wsCF, "Project FCF (unlevered)", n, (i) =>
-    `${B.at("ebitda", i)}+${B.at("grant_income", i)}-${col(i)}${taxU.number}-${B.at("capex_spend", i)}+${col(i)}${dAr.number}+${col(i)}${dAp.number}+${col(i)}${owc.number}`
+    `${B.at("ebitda", i)}-${col(i)}${taxU.number}-${B.at("capex_spend", i)}+${col(i)}${dAr.number}+${col(i)}${dAp.number}+${col(i)}${owc.number}`
+  );
+
+  // The same flows with grants added back, on the basis the project return was
+  // quoted on before grants were separated out. Its own loss pool: a different
+  // taxable profit carries a different carry-forward, and sharing the clean
+  // pool would understate the tax here.
+  const pbtG = formulaRow(wsCF, "Unlevered PBT incl. grants (EBIT + grants)", n, (i) =>
+    `${B.at("ebit_pl", i)}+${B.at("grant_income", i)}`
+  );
+  const nolG = wsCF.addRow(["Unlevered loss carry-forward pool, incl. grants"]);
+  const taxG = wsCF.addRow(["Unlevered tax, incl. grants"]);
+  for (let i = 0; i < n; i++) {
+    const prev = i === 0 ? "0" : `${col(i - 1)}${nolG.number}`;
+    const pbtCell = `${col(i)}${pbtG.number}`;
+    nolG.getCell(i + FIRST_COL).value = { formula: `MAX(0,${prev}-${pbtCell})` } as ExcelJS.CellFormulaValue;
+    nolG.getCell(i + FIRST_COL).numFmt = NUM;
+    taxG.getCell(i + FIRST_COL).value = {
+      formula: `MAX(0,${pbtCell}-${prev})*${B.scalar("citr")}`,
+    } as ExcelJS.CellFormulaValue;
+    taxG.getCell(i + FIRST_COL).numFmt = NUM;
+  }
+  const projFcfG = formulaRow(wsCF, "Project FCF incl. grants", n, (i) =>
+    `${B.at("ebitda", i)}+${B.at("grant_income", i)}-${col(i)}${taxG.number}-${B.at("capex_spend", i)}+${col(i)}${dAr.number}+${col(i)}${dAp.number}+${col(i)}${owc.number}`
   );
   const eqFcf = formulaRow(wsCF, "Equity FCF (levered)", n, (i) =>
     `${col(i)}${cfo.number}+${col(i)}${cfi.number}+${B.at("debt_draw", i)}-${B.at("debt_repay", i)}+${B.at("grant_cash", i)}`
   );
   B.set("proj_fcf", "Cashflow", projFcf.number);
+  B.set("proj_fcf_g", "Cashflow", projFcfG.number);
   B.set("eq_fcf", "Cashflow", eqFcf.number);
 
   // ---- valuation flows, live -------------------------------------------
@@ -927,6 +953,9 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
   const projTv = formulaRow(wsCF, "Project FCF incl. terminal value", n, (i) =>
     i === n - 1 ? `${col(i)}${projFcf.number}+$B$${tvEnt.number}` : `${col(i)}${projFcf.number}`
   );
+  const projTvG = formulaRow(wsCF, "Project FCF incl. grants and terminal value", n, (i) =>
+    i === n - 1 ? `${col(i)}${projFcfG.number}+$B$${tvEnt.number}` : `${col(i)}${projFcfG.number}`
+  );
   const eqTv = formulaRow(wsCF, "Equity FCF incl. terminal value", n, (i) =>
     i === n - 1 ? `${col(i)}${eqFcf.number}+$B$${tvEq.number}` : `${col(i)}${eqFcf.number}`
   );
@@ -937,6 +966,7 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
     (i) => `1/(1+${B.scalar("koe")})^${col(i)}${yearsRow.number}`, "0.0000");
 
   B.set("proj_tv", "Cashflow", projTv.number);
+  B.set("proj_tv_g", "Cashflow", projTvG.number);
   B.set("eq_tv", "Cashflow", eqTv.number);
   B.set("df_wacc", "Cashflow", dfWacc.number);
   B.set("df_koe", "Cashflow", dfKoe.number);
@@ -1021,6 +1051,7 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
   retFormula("Terminal value — equity", `'Cashflow'!$B$${B.row("tv_eq")}`, NUM);
 
   retFormula("Project NPV at WACC", `SUMPRODUCT(${rng("proj_tv")},${rng("df_wacc")})`, NUM);
+  retFormula("Project NPV at WACC, incl. grants", `SUMPRODUCT(${rng("proj_tv_g")},${rng("df_wacc")})`, NUM);
   retFormula("Equity NPV at cost of equity", `SUMPRODUCT(${rng("eq_tv")},${rng("df_koe")})`, NUM);
 
   // XIRR rather than IRR: the grid is monthly then annual, so the cash flows are
@@ -1030,6 +1061,11 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
   retFormula(
     "Project IRR (unlevered, XIRR)",
     `IFERROR(XIRR(${rng("proj_tv")},${rng("cf_dates")},${(v.projectIrr ?? 0.1).toFixed(4)}),"n/a")`,
+    PCT
+  );
+  retFormula(
+    "Project IRR incl. grants (XIRR)",
+    `IFERROR(XIRR(${rng("proj_tv_g")},${rng("cf_dates")},${(v.projectIrrInclGrants ?? 0.1).toFixed(4)}),"n/a")`,
     PCT
   );
   retFormula(
@@ -1043,6 +1079,8 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
   refHead.font = { bold: true, size: 9, color: { argb: "FF666666" } };
   for (const [label, value, fmt] of [
     ["Project IRR — engine (exact year fractions)", v.projectIrr ?? "n/a", PCT],
+    ["Project IRR incl. grants — engine", v.projectIrrInclGrants ?? "n/a", PCT],
+    ["Project NPV incl. grants — engine", v.projectNpvInclGrants, NUM],
     ["Equity IRR — engine (exact year fractions)", v.equityIrr ?? "n/a", PCT],
     ["Project NPV — engine", v.projectNpv, NUM],
     ["Equity NPV — engine", v.equityNpv, NUM],
@@ -1053,7 +1091,8 @@ export function buildWorkbook(inputs: ScenarioInputs): ExcelJS.Workbook {
   }
 
   const rnote = wsS.addRow([
-    "All Returns figures above are live formulas over the Cashflow sheet. The engine reference rows are the values as computed in the portal at export time; NPV should match to the cent, IRR to well under a tenth of a basis point, the residual being XIRR's actual/365 day counting against the engine's exact year fractions.",
+    "Project IRR is unlevered and independent of every source of funding: no debt, no equity and no grants, including their tax effect. Project IRR incl. grants is the same asset with the subsidy added back, which is the basis the project return was quoted on before grants were separated out. Grants remain in the Equity IRR, which is where a shareholder sees them. " +
+    "All Returns figures above are live formulas over the Cashflow sheet. The engine reference rows are the values as computed in the portal at export time; NPV should match to the cent and IRR to within about a basis point, the residual being XIRR's actual/365 day counting against the engine's exact year fractions.",
   ]);
   rnote.font = { italic: true, size: 9, color: { argb: "FF666666" } };
 

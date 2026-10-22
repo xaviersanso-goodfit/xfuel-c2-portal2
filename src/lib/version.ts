@@ -7,7 +7,7 @@
  *
  * Bump this whenever a build is handed over.
  */
-export const BUILD = "2026-10-05-v2.1";
+export const BUILD = "2026-10-22-v2.2";
 
 /** What landed in this build. Shown on hover of the version chip. */
 export const BUILD_NOTES = [
@@ -21,4 +21,6 @@ export const BUILD_NOTES = [
   "Changelog: who changed what, when",
   "v2.1: sustainable premium is per year, as a multiplier or EUR per ton",
   "v2.1: unit economics by year, base against premium",
+  "v2.2: Project IRR is unlevered, independent of debt, equity and grants",
+  "v2.2: Project IRR incl. grants reported alongside",
 ].join(" · ");

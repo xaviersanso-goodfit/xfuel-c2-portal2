@@ -223,7 +223,10 @@ export interface PeriodResult {
   ar: number;
   ap: number;
   // Valuation flows
+  /** Free cash flow to the project, unlevered and before grants. */
   projectFcf: number;
+  /** The same flows with grant income and its tax effect added back. */
+  projectFcfInclGrants: number;
   equityFcf: number;
 }
 
@@ -231,8 +234,19 @@ export interface ValuationResult {
   terminalValueEnterprise: number;
   terminalValueEquity: number;
   netDebtAtExit: number;
+  /**
+   * Unlevered. Independent of every source of funding: no debt, no equity, and
+   * no grants. This is the figure that answers "what does the asset earn".
+   */
   projectIrr: number | null;
   projectNpv: number;
+  /**
+   * The same unlevered flows with grant income and its tax effect added back.
+   * Reported alongside, because it is the basis the project return was quoted
+   * on before grants were separated out.
+   */
+  projectIrrInclGrants: number | null;
+  projectNpvInclGrants: number;
   equityIrr: number | null;
   equityNpv: number;
 }

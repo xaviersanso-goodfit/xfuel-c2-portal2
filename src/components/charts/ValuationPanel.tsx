@@ -55,9 +55,16 @@ export default function ValuationPanel({ inputs, model }: { inputs: ScenarioInpu
     {
       label: "Project IRR",
       value: pct(v.projectIrr),
-      meta: "unlevered",
+      meta: "unlevered, before grants",
       good: (v.projectIrr ?? -1) >= p.wacc,
-      def: "Annual return on the project's own cash flows, before any financing. Ignores how the plant is funded, so it measures the asset, not the deal. Compare it against the WACC.",
+      def: "Annual return on the project's own cash flows, before any source of funding: no debt, no equity and no grants, including their tax effect. It measures the asset, not the deal. Compare it against the WACC.",
+    },
+    {
+      label: "Project IRR incl. grants",
+      value: pct(v.projectIrrInclGrants),
+      meta: "unlevered, grants added back",
+      good: (v.projectIrrInclGrants ?? -1) >= p.wacc,
+      def: "The same unlevered asset with the subsidy and its tax effect added back. This is the basis the project return was quoted on before grants were separated out, so the gap to the figure above is what the grant contributes.",
     },
     {
       label: "Project NPV",
